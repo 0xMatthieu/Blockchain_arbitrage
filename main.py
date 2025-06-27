@@ -34,6 +34,14 @@ TRADE_COOLDOWN_SECONDS = 60
 
 # --- Web3 Setup ---
 w3 = Web3(Web3.HTTPProvider(BASE_RPC_URL))
+
+# --- Convert addresses to checksum format for web3.py compatibility ---
+if TOKEN_ADDRESS:
+    TOKEN_ADDRESS = w3.to_checksum_address(TOKEN_ADDRESS)
+if BASE_CURRENCY_ADDRESS:
+    BASE_CURRENCY_ADDRESS = w3.to_checksum_address(BASE_CURRENCY_ADDRESS)
+DEX_ROUTERS = {k: w3.to_checksum_address(v) for k, v in DEX_ROUTERS.items()}
+
 account = w3.eth.account.from_key(PRIVATE_KEY) if PRIVATE_KEY and PRIVATE_KEY != "0xyour_private_key_here" else None
 if account:
     print(f"Bot wallet address: {account.address}")
