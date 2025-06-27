@@ -242,6 +242,7 @@ def main():
         # Approve the router to spend the TARGET currency for the SELL
         # We approve a very large number for the target token to avoid re-approving.
         check_and_approve_token(TOKEN_ADDRESS, router_address, w3.to_wei(2**64 - 1, 'ether'))
+        time.sleep(1) # Add a delay to avoid hitting RPC rate limits
     print("--- Initial Approval Checks Complete ---\n")
 
 
