@@ -46,6 +46,17 @@ account = w3.eth.account.from_key(PRIVATE_KEY) if PRIVATE_KEY and PRIVATE_KEY !=
 if account:
     print(f"Bot wallet address: {account.address}")
 
+def find_router_address(dex_id, routers):
+    """Finds a router address with flexible matching."""
+    # 1. Exact match
+    if dex_id in routers:
+        return routers[dex_id]
+    # 2. Substring match (e.g., api returns 'uniswap', we have 'uniswap_v2' in .env)
+    for key, address in routers.items():
+        if dex_id in key or key in dex_id:
+            return address
+    return None
+
 def check_and_approve_token(token_address, spender_address, amount_to_approve_wei):
     if not account or not token_address or not spender_address:
         return
@@ -89,11 +100,11 @@ def execute_trade(buy_pool, sell_pool, spread):
 
     buy_dex_name = buy_pool['dex']
     sell_dex_name = sell_pool['dex']
-    buy_router_address = DEX_ROUTERS.get(buy_dex_name)
-    sell_router_address = DEX_ROUTERS.get(sell_dex_name)
+    buy_router_address = find_router_address(buy_dex_name, DEX_ROUTERS)
+    sell_router_address = find_router_address(sell_dex_name, DEX_ROUTERS)
 
     if not buy_router_address or not sell_router_address:
-        print(f"!!! TRADING SKIPPED: Router address for {buy_dex_name} or {sell_dex_name} not in .env")
+        print(f"!!! TRADING SKIPPED: Router address for '{buy_dex_name}' or '{sell_dex_name}' not found in .env")
         return
 
     last_trade_attempt_ts = time.time() # Set cooldown immediately
@@ -107,9 +118,17 @@ def execute_trade(buy_pool, sell_pool, spread):
         base_decimals = base_token_contract.functions.decimals().call()
         amount_in_wei = int(TRADE_AMOUNT_BASE_TOKEN * (10**base_decimals))
 
-        path_buy = [BASE_CURRENCY_ADDRESS, TOKEN_ADDRESS]
-        amount_out_min_wei = int((amount_in_wei / buy_pool['price']) * (1 - SLIPPAGE_TOLERANCE_PERCENT / 100.0))
+        target_token_contract = w3.eth.contract(address=TOKEN_ADDRESS, abi=ERC20_ABI)
+        target_decimals = target_token_contract.functions.decimals().call()
 
+        # Calculate minimum amount out using priceNative (price in terms of base currency)
+        # price = amount of quote token (WETH) for 1 base token (KTA)
+        expected_amount_out_float = TRADE_AMOUNT_BASE_TOKEN / buy_pool['price']
+        min_amount_out_float = expected_amount_out_float * (1 - SLIPPAGE_TOLERANCE_PERCENT / 100.0)
+        amount_out_min_wei = int(min_amount_out_float * (10**target_decimals))
+
+        path_buy = [BASE_CURRENCY_ADDRESS, TOKEN_ADDRESS]
+        
         buy_txn = buy_router_contract.functions.swapExactTokensForTokens(
             amount_in_wei,
             amount_out_min_wei,
@@ -131,21 +150,35 @@ def execute_trade(buy_pool, sell_pool, spread):
             print("  - BUY TRANSACTION FAILED (reverted). Aborting arbitrage.")
             return
         
-        print("  - Buy transaction successful!")
-        # To get the exact amount out, you'd parse the receipt logs. For simplicity, we'll use the trade amount.
-        # A robust implementation MUST parse logs to get the true amount received.
-        amount_to_sell_wei = amount_out_min_wei # Simplified for this example
+        print("  - Buy transaction successful! Parsing receipt for actual amount received...")
+        
+        # --- Parse receipt to find exact amount of tokens received ---
+        amount_received_wei = 0
+        TRANSFER_EVENT_SIG = w3.keccak(text="Transfer(address,address,uint256)").hex()
+        for log in buy_receipt.logs:
+            if str(log.address) == TOKEN_ADDRESS and str(log.topics[0].hex()) == TRANSFER_EVENT_SIG:
+                recipient_address = w3.to_checksum_address("0x" + log.topics[2].hex()[-40:])
+                if recipient_address == account.address:
+                    amount_received_wei = int(log.data.hex(), 16)
+                    print(f"  - Detected {amount_received_wei / (10**target_decimals)} tokens received.")
+                    break
+        
+        if amount_received_wei == 0:
+            print("  - CRITICAL: Could not determine received token amount from transaction logs. Aborting sell.")
+            return
 
         # --- 2. SELL TRANSACTION ---
-        print(f"Step 2: Selling {TOKEN_ADDRESS} on {sell_dex_name}...")
+        print(f"Step 2: Selling {amount_received_wei} of {TOKEN_ADDRESS} on {sell_dex_name}...")
         sell_router_contract = w3.eth.contract(address=sell_router_address, abi=UNISWAP_V2_ROUTER_ABI)
         path_sell = [TOKEN_ADDRESS, BASE_CURRENCY_ADDRESS]
         
-        # For the sell, amountOutMin is the original investment minus slippage
-        final_amount_out_min_wei = int(amount_in_wei * (1 - SLIPPAGE_TOLERANCE_PERCENT / 100.0))
+        # For the sell, amountOutMin is based on the sell price
+        expected_sell_return_float = (amount_received_wei / (10**target_decimals)) * sell_pool['price']
+        min_sell_return_float = expected_sell_return_float * (1 - SLIPPAGE_TOLERANCE_PERCENT / 100.0)
+        final_amount_out_min_wei = int(min_sell_return_float * (10**base_decimals))
 
         sell_txn = sell_router_contract.functions.swapExactTokensForTokens(
-            amount_to_sell_wei,
+            amount_received_wei, # Use the exact amount we received
             final_amount_out_min_wei,
             path_sell,
             account.address,
@@ -228,12 +261,16 @@ def main():
 
             current_pairs = []
             for p in j['pairs']:
-                if p.get('priceUsd') and p.get('liquidity') and p.get('liquidity').get('usd'):
+                # Ensure we are trading against our base currency and have the native price
+                if (p.get('priceNative') and
+                    p.get('quoteToken') and p.get('quoteToken').get('address') and
+                    w3.to_checksum_address(p['quoteToken']['address']) == BASE_CURRENCY_ADDRESS and
+                    p.get('liquidity') and p.get('liquidity').get('usd')):
                     current_pairs.append({
                         'dex': p['dexId'],
                         'chain' : p['chainId'],
                         'pair': f"{p['baseToken']['symbol']}/{p['quoteToken']['symbol']}",
-                        'price': float(p['priceUsd']),
+                        'price': float(p['priceNative']), # Use priceNative
                         'liq_usd': float(p['liquidity']['usd']),
                         'pairAddress': p['pairAddress']
                     })
