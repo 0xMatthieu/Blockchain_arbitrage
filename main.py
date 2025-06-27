@@ -118,16 +118,13 @@ def execute_trade(buy_pool, sell_pool, spread):
         base_decimals = base_token_contract.functions.decimals().call()
         amount_in_wei = int(TRADE_AMOUNT_BASE_TOKEN * (10**base_decimals))
 
-        target_token_contract = w3.eth.contract(address=TOKEN_ADDRESS, abi=ERC20_ABI)
-        target_decimals = target_token_contract.functions.decimals().call()
-
-        # Calculate minimum amount out using priceNative (price in terms of base currency)
-        # price = amount of quote token (WETH) for 1 base token (KTA)
-        expected_amount_out_float = TRADE_AMOUNT_BASE_TOKEN / buy_pool['price']
-        min_amount_out_float = expected_amount_out_float * (1 - SLIPPAGE_TOLERANCE_PERCENT / 100.0)
-        amount_out_min_wei = int(min_amount_out_float * (10**target_decimals))
-
         path_buy = [BASE_CURRENCY_ADDRESS, TOKEN_ADDRESS]
+        
+        # Get expected amount out from the router for an accurate on-chain price
+        amounts_out = buy_router_contract.functions.getAmountsOut(amount_in_wei, path_buy).call()
+        expected_amount_out_wei = amounts_out[1]
+        # Apply slippage to the on-chain expected amount
+        amount_out_min_wei = int(expected_amount_out_wei * (1 - SLIPPAGE_TOLERANCE_PERCENT / 100.0))
         
         buy_txn = buy_router_contract.functions.swapExactTokensForTokens(
             amount_in_wei,
@@ -154,7 +151,10 @@ def execute_trade(buy_pool, sell_pool, spread):
         
         # --- Parse receipt to find exact amount of tokens received ---
         amount_received_wei = 0
+        target_token_contract = w3.eth.contract(address=TOKEN_ADDRESS, abi=ERC20_ABI)
+        target_decimals = target_token_contract.functions.decimals().call()
         TRANSFER_EVENT_SIG = w3.keccak(text="Transfer(address,address,uint256)").hex()
+
         for log in buy_receipt.logs:
             if str(log.address) == TOKEN_ADDRESS and str(log.topics[0].hex()) == TRANSFER_EVENT_SIG:
                 recipient_address = w3.to_checksum_address("0x" + log.topics[2].hex()[-40:])
@@ -168,14 +168,15 @@ def execute_trade(buy_pool, sell_pool, spread):
             return
 
         # --- 2. SELL TRANSACTION ---
-        print(f"Step 2: Selling {amount_received_wei} of {TOKEN_ADDRESS} on {sell_dex_name}...")
+        print(f"Step 2: Selling {amount_received_wei / (10**target_decimals)} of {TOKEN_ADDRESS} on {sell_dex_name}...")
         sell_router_contract = w3.eth.contract(address=sell_router_address, abi=UNISWAP_V2_ROUTER_ABI)
         path_sell = [TOKEN_ADDRESS, BASE_CURRENCY_ADDRESS]
         
-        # For the sell, amountOutMin is based on the sell price
-        expected_sell_return_float = (amount_received_wei / (10**target_decimals)) * sell_pool['price']
-        min_sell_return_float = expected_sell_return_float * (1 - SLIPPAGE_TOLERANCE_PERCENT / 100.0)
-        final_amount_out_min_wei = int(min_sell_return_float * (10**base_decimals))
+        # Get expected sell return from the router for an accurate on-chain price
+        amounts_out_sell = sell_router_contract.functions.getAmountsOut(amount_received_wei, path_sell).call()
+        expected_sell_return_wei = amounts_out_sell[1]
+        # Apply slippage to the on-chain expected amount
+        final_amount_out_min_wei = int(expected_sell_return_wei * (1 - SLIPPAGE_TOLERANCE_PERCENT / 100.0))
 
         sell_txn = sell_router_contract.functions.swapExactTokensForTokens(
             amount_received_wei, # Use the exact amount we received
