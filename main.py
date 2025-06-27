@@ -1,79 +1,154 @@
-import requests, pandas as pd, time
+import os
+import asyncio
+import json
+import time
+from dotenv import load_dotenv
+import pandas as pd
+from web3 import Web3
 
-# --- Configuration ---
-ADDR = "0xc0634090f2fe6c6d75e61be2b949464abb498973"   # KTA on Base
-MIN_LIQUIDITY_USD = 1000 # Minimum liquidity in USD to consider a pool
+# --- Load Configuration from .env file ---
+load_dotenv()
 
-# --- Data Fetching ---
-print(f"Searching for pools for token: {ADDR}...")
-try:
-    response = requests.get(f"https://api.dexscreener.com/latest/dex/tokens/{ADDR}")
-    response.raise_for_status() # Raise an exception for bad status codes (4xx or 5xx)
-    j = response.json()
-except requests.exceptions.RequestException as e:
-    print(f"Error calling DexScreener API: {e}")
-    exit()
+TOKEN_ADDRESS = os.getenv("TOKEN_ADDRESS")
+MIN_LIQUIDITY_USD = float(os.getenv("MIN_LIQUIDITY_USD", 1000))
+MIN_SPREAD_PERCENT = float(os.getenv("MIN_SPREAD_PERCENT", 1.0))
+BASE_RPC_URL = os.getenv("BASE_RPC_URL")
+PRIVATE_KEY = os.getenv("PRIVATE_KEY")
 
-if not j or not j.get('pairs'):
-    print("No pairs found for this token.")
-    exit()
+# --- Global State ---
+pools_data = {} # Dictionary to store real-time data for each pair address
+last_trade_attempt_ts = 0 # Timestamp of the last trade attempt
+TRADE_COOLDOWN_SECONDS = 60 # Cooldown period to prevent rapid-fire trades
 
-# --- Data Processing ---
-pairs = []
-for p in j['pairs']:
-    # Ensure necessary data exists, especially liquidity and price
-    if p.get('priceUsd') and p.get('liquidity') and p.get('liquidity').get('usd'):
-        pairs.append({
-            'dex': p['dexId'],
-            'chain' : p['chainId'],
-            'pair': f"{p['baseToken']['symbol']}/{p['quoteToken']['symbol']}",
-            'price': float(p['priceUsd']),
-            'liq_usd': float(p['liquidity']['usd']),
-            'pairAddress': p['pairAddress']
-        })
+# --- Web3 Setup (for trading) ---
+# Note: This setup is basic. A real implementation would need more configuration.
+w3 = Web3(Web3.HTTPProvider(BASE_RPC_URL))
+account = w3.eth.account.from_key(PRIVATE_KEY) if PRIVATE_KEY and PRIVATE_KEY != "0xyour_private_key_here" else None
 
-if not pairs:
-    print("No valid pair data could be extracted.")
-    exit()
+# --- DANGER: TRADING FUNCTION ---
+# This is a placeholder function. It does NOT execute real trades.
+# Building a reliable trading function is complex and requires handling:
+# - DEX Router ABIs (e.g., Uniswap V2/V3)
+# - Calculating optimal amounts for swapping
+# - Gas price estimation
+# - Slippage tolerance
+# - Transaction nonce management
+# - Error handling (e.g., transaction reverted)
+# PROCEED WITH EXTREME CAUTION AND TEST ON A TESTNET FIRST.
+async def execute_trade(buy_pool, sell_pool, spread):
+    global last_trade_attempt_ts
+    
+    print("\n" + "!"*60)
+    print("!!! TRADE EXECUTION TRIGGERED (SIMULATION) !!!")
+    print(f"!!! Spread of {spread:.2f}% detected, which is >= {MIN_SPREAD_PERCENT}%")
+    print("!"*60)
 
-df = pd.DataFrame(pairs)
+    if not account:
+        print("!!! TRADING SKIPPED: PRIVATE_KEY not configured in .env file.")
+        return
 
-# --- Arbitrage Analysis ---
-print(f"Analyzing arbitrage opportunities with a minimum liquidity of ${MIN_LIQUIDITY_USD:,.2f}...")
+    print(f"SIMULATION: Buy on {buy_pool['dex']} and Sell on {sell_pool['dex']}.")
+    print(f"  - Buy Price : ${buy_pool['price']:.6f} (Liq: ${buy_pool['liq_usd']:,.2f})")
+    print(f"  - Sell Price: ${sell_pool['price']:.6f} (Liq: ${sell_pool['liq_usd']:,.2f})")
+    
+    # --- REAL IMPLEMENTATION WOULD GO HERE ---
+    # 1. Connect to DEX routers for both pools using their contract addresses and ABIs.
+    # 2. Determine the amount to trade based on liquidity and desired profit.
+    # 3. Build the transaction for the 'buy' operation.
+    #    - e.g., swapExactETHForTokens or swapExactTokensForTokens
+    # 4. Sign the transaction with your private key.
+    # 5. Send the transaction and wait for the receipt.
+    # 6. If the buy was successful, build, sign, and send the 'sell' transaction.
+    #
+    # This is often done via a custom smart contract for atomic execution (flash swaps).
+    # A simple buy-then-sell sequence is vulnerable to front-running and price changes.
+    
+    print("!!! SIMULATION COMPLETE. NO REAL FUNDS WERE USED. !!!")
+    
+    # Update timestamp to enforce cooldown
+    last_trade_attempt_ts = time.time()
 
-# Filter for pools with sufficient liquidity
-liquid_pools = df[df['liq_usd'] >= MIN_LIQUIDITY_USD].copy()
 
-# Sort by price to easily find the lowest and highest
-liquid_pools.sort_values('price', inplace=True)
+def analyze_and_trade():
+    global last_trade_attempt_ts
 
-if len(liquid_pools) < 2:
-    print("Not enough pools with sufficient liquidity to find an arbitrage opportunity.")
-else:
-    # The pool with the lowest price (best for buying)
-    buy_pool = liquid_pools.iloc[0]
-    # The pool with the highest price (best for selling)
-    sell_pool = liquid_pools.iloc[-1]
+    # Check if we are in a cooldown period
+    if time.time() - last_trade_attempt_ts < TRADE_COOLDOWN_SECONDS:
+        return
+
+    valid_pools = [pool for pool in pools_data.values() if pool.get('price') and pool.get('liq_usd') >= MIN_LIQUIDITY_USD]
+
+    if len(valid_pools) < 2:
+        return # Not enough liquid pools to compare
+
+    # Sort by price to find the best buy and sell opportunities
+    sorted_pools = sorted(valid_pools, key=lambda x: x['price'])
+    
+    buy_pool = sorted_pools[0]
+    sell_pool = sorted_pools[-1]
 
     # Calculate the potential profit margin
     spread = ((sell_pool['price'] - buy_pool['price']) / buy_pool['price']) * 100
 
-    print("\n--- Potential Arbitrage Opportunity Found ---")
-    print(f"Buy on: {buy_pool['dex']} ({buy_pool['chain']})")
-    print(f"  Pair         : {buy_pool['pair']}")
-    print(f"  Price        : ${buy_pool['price']:.6f}")
-    print(f"  Liquidity    : ${buy_pool['liq_usd']:,.2f}")
-    print(f"  Pair Address : {buy_pool['pairAddress']}")
+    # Print current best prices for monitoring
+    print(f"\rBest Buy: ${buy_pool['price']:.6f} ({buy_pool['dex']}) | Best Sell: ${sell_pool['price']:.6f} ({sell_pool['dex']}) | Spread: {spread:.2f}%", end="")
+
+    if spread >= MIN_SPREAD_PERCENT:
+        # An opportunity is found, trigger the trade function
+        asyncio.create_task(execute_trade(buy_pool, sell_pool, spread))
+
+
+async def main():
+    if not TOKEN_ADDRESS:
+        print("Error: TOKEN_ADDRESS is not defined in your .env file.")
+        return
+
+    uri = "wss://io.dexscreener.com/dex/screener/v2/streaming/pairs/sub"
     
-    print("\n" + "-"*20 + "\n")
+    print("Connecting to DexScreener WebSocket...")
+    async with websockets.connect(uri) as websocket:
+        print("Connection successful.")
+        
+        # Subscribe to the token's pairs
+        subscription_message = {
+            "method": "subscribe",
+            "id": 1,
+            "params": {
+                "channel": "tokens",
+                "token": TOKEN_ADDRESS,
+                "chain": "base" # Assuming 'base' chain, can be made dynamic
+            }
+        }
+        await websocket.send(json.dumps(subscription_message))
 
-    print(f"Sell on : {sell_pool['dex']} ({sell_pool['chain']})")
-    print(f"  Pair         : {sell_pool['pair']}")
-    print(f"  Price        : ${sell_pool['price']:.6f}")
-    print(f"  Liquidity    : ${sell_pool['liq_usd']:,.2f}")
-    print(f"  Pair Address : {sell_pool['pairAddress']}")
+        print(f"Subscribed to updates for token: {TOKEN_ADDRESS}")
+        print("Listening for price updates...")
+        print("-" * 50)
 
-    print("\n" + "="*45)
-    print(f"Potential price spread: {spread:.2f}%")
-    print("="*45)
-    print("\nNote: This is not financial advice. Transaction fees, slippage, and other factors can affect profitability.")
+        async for message in websocket:
+            try:
+                data = json.loads(message)
+                if data.get("method") == "pair" and data.get("params"):
+                    for pair_update in data["params"]:
+                        # Update our global state with the new data
+                        pools_data[pair_update['pairAddress']] = {
+                            'dex': pair_update['dexId'],
+                            'chain': pair_update['chainId'],
+                            'pair': f"{pair_update['baseToken']['symbol']}/{pair_update['quoteToken']['symbol']}",
+                            'price': float(pair_update['priceUsd']),
+                            'liq_usd': float(pair_update['liquidity']['usd']),
+                            'pairAddress': pair_update['pairAddress']
+                        }
+                    
+                    # After every update, re-analyze for arbitrage
+                    analyze_and_trade()
+
+            except Exception as e:
+                print(f"\nAn error occurred while processing a message: {e}")
+
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\nProgram stopped by user.")
