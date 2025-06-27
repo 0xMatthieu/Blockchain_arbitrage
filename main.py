@@ -317,7 +317,7 @@ def main():
             if current_pairs:
                 analyze_and_trade(current_pairs)
 
-        except requests.exceptions.RequestException as e:
+        except requests.exceptions.RequestEcan xception as e:
             print(f"\nAn error occurred while fetching data: {e}")
         except Exception as e:
             print(f"\nAn unexpected error occurred: {e}")
