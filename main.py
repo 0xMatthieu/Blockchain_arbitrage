@@ -60,7 +60,7 @@ def check_and_approve_token(token_address, spender_address, amount_to_approve_we
         })
         
         signed_txn = w3.eth.account.sign_transaction(approve_txn, PRIVATE_KEY)
-        tx_hash = w3.eth.send_raw_transaction(signed_txn.rawTransaction)
+        tx_hash = w3.eth.send_raw_transaction(signed_txn.raw_transaction)
         
         print(f"Approval transaction sent. Hash: {tx_hash.hex()}. Waiting for confirmation...")
         w3.eth.wait_for_transaction_receipt(tx_hash)
@@ -115,7 +115,7 @@ def execute_trade(buy_pool, sell_pool, spread):
         })
 
         signed_buy_txn = w3.eth.account.sign_transaction(buy_txn, PRIVATE_KEY)
-        buy_tx_hash = w3.eth.send_raw_transaction(signed_buy_txn.rawTransaction)
+        buy_tx_hash = w3.eth.send_raw_transaction(signed_buy_txn.raw_transaction)
         print(f"  - Buy Tx sent: {buy_tx_hash.hex()}")
         buy_receipt = w3.eth.wait_for_transaction_receipt(buy_tx_hash, timeout=120)
 
@@ -149,7 +149,7 @@ def execute_trade(buy_pool, sell_pool, spread):
         })
 
         signed_sell_txn = w3.eth.account.sign_transaction(sell_txn, PRIVATE_KEY)
-        sell_tx_hash = w3.eth.send_raw_transaction(signed_sell_txn.rawTransaction)
+        sell_tx_hash = w3.eth.send_raw_transaction(signed_sell_txn.raw_transaction)
         print(f"  - Sell Tx sent: {sell_tx_hash.hex()}")
         sell_receipt = w3.eth.wait_for_transaction_receipt(sell_tx_hash, timeout=120)
 
