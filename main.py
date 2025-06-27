@@ -19,6 +19,7 @@ PRIVATE_KEY = os.getenv("PRIVATE_KEY")
 BASE_CURRENCY_ADDRESS = os.getenv("BASE_CURRENCY_ADDRESS")
 TRADE_AMOUNT_BASE_TOKEN = float(os.getenv("TRADE_AMOUNT_BASE_TOKEN", 0.0))
 SLIPPAGE_TOLERANCE_PERCENT = float(os.getenv("SLIPPAGE_TOLERANCE_PERCENT", 1.0))
+MAX_GAS_LIMIT = int(os.getenv("MAX_GAS_LIMIT", 500000))
 try:
     DEX_ROUTERS = json.loads(os.getenv("DEX_ROUTERS", '{}'))
 except json.JSONDecodeError:
@@ -79,7 +80,10 @@ def check_and_approve_token(token_address, spender_address, amount_to_approve_we
                 spender_address,
                 amount_to_approve_wei
             ).estimate_gas(approve_payload)
-            approve_payload['gas'] = int(gas_estimate * 1.2) # Add 20% buffer
+            
+            # Use buffered gas estimate but cap it with MAX_GAS_LIMIT
+            buffered_gas = int(gas_estimate * 1.2)
+            approve_payload['gas'] = min(buffered_gas, MAX_GAS_LIMIT)
 
             approve_txn = token_contract.functions.approve(
                 spender_address,
@@ -142,7 +146,9 @@ def execute_trade(buy_pool, sell_pool, spread):
         gas_estimate = buy_router_contract.functions.swapExactTokensForTokens(
             amount_in_wei, amount_out_min_wei, path_buy, account.address, int(time.time()) + 60 * 5
         ).estimate_gas(buy_payload)
-        buy_payload['gas'] = int(gas_estimate * 1.2)
+        
+        buffered_gas = int(gas_estimate * 1.2)
+        buy_payload['gas'] = min(buffered_gas, MAX_GAS_LIMIT)
 
         buy_txn = buy_router_contract.functions.swapExactTokensForTokens(
             amount_in_wei,
@@ -197,7 +203,9 @@ def execute_trade(buy_pool, sell_pool, spread):
         gas_estimate_sell = sell_router_contract.functions.swapExactTokensForTokens(
             amount_received_wei, final_amount_out_min_wei, path_sell, account.address, int(time.time()) + 60 * 5
         ).estimate_gas(sell_payload)
-        sell_payload['gas'] = int(gas_estimate_sell * 1.2)
+        
+        buffered_gas_sell = int(gas_estimate_sell * 1.2)
+        sell_payload['gas'] = min(buffered_gas_sell, MAX_GAS_LIMIT)
 
         sell_txn = sell_router_contract.functions.swapExactTokensForTokens(
             amount_received_wei,
