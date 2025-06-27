@@ -106,8 +106,13 @@ async def main():
 
     uri = "wss://io.dexscreener.com/dex/screener/v2/streaming/pairs/sub"
     
+    # Add a User-Agent header to mimic a browser connection
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    }
+
     print("Connecting to DexScreener WebSocket...")
-    async with websockets.connect(uri) as websocket:
+    async with websockets.connect(uri, extra_headers=headers) as websocket:
         print("Connection successful.")
         
         # Subscribe to the token's pairs
