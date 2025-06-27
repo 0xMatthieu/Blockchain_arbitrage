@@ -71,17 +71,23 @@ def check_and_approve_token(token_address, spender_address, amount_to_approve_we
         print(f"Allowance is {allowance}. Need {amount_to_approve_wei}. Approving...")
         
         try:
+            # EIP-1559 Transaction
+            max_priority_fee = w3.eth.max_priority_fee
+            base_fee = w3.eth.get_block('latest')['baseFeePerGas']
+            max_fee_per_gas = base_fee * 2 + max_priority_fee
+
             approve_payload = {
                 'from': account.address,
                 'nonce': w3.eth.get_transaction_count(account.address),
-                'gasPrice': w3.eth.gas_price,
+                'maxFeePerGas': max_fee_per_gas,
+                'maxPriorityFeePerGas': max_priority_fee,
+                'chainId': w3.eth.chain_id
             }
             gas_estimate = token_contract.functions.approve(
                 spender_address,
                 amount_to_approve_wei
             ).estimate_gas(approve_payload)
             
-            # Use buffered gas estimate but cap it with MAX_GAS_LIMIT
             buffered_gas = int(gas_estimate * 1.2)
             approve_payload['gas'] = min(buffered_gas, MAX_GAS_LIMIT)
 
@@ -138,10 +144,17 @@ def execute_trade(buy_pool, sell_pool, spread):
         expected_amount_out_wei = amounts_out[1]
         amount_out_min_wei = int(expected_amount_out_wei * (1 - SLIPPAGE_TOLERANCE_PERCENT / 100.0))
         
+        # EIP-1559 Transaction
+        max_priority_fee = w3.eth.max_priority_fee
+        base_fee = w3.eth.get_block('latest')['baseFeePerGas']
+        max_fee_per_gas = base_fee * 2 + max_priority_fee
+
         buy_payload = {
             'from': account.address,
-            'gasPrice': w3.eth.gas_price,
-            'nonce': w3.eth.get_transaction_count(account.address)
+            'nonce': w3.eth.get_transaction_count(account.address),
+            'maxFeePerGas': max_fee_per_gas,
+            'maxPriorityFeePerGas': max_priority_fee,
+            'chainId': w3.eth.chain_id
         }
         gas_estimate = buy_router_contract.functions.swapExactTokensForTokens(
             amount_in_wei, amount_out_min_wei, path_buy, account.address, int(time.time()) + 60 * 5
@@ -195,10 +208,17 @@ def execute_trade(buy_pool, sell_pool, spread):
         expected_sell_return_wei = amounts_out_sell[1]
         final_amount_out_min_wei = int(expected_sell_return_wei * (1 - SLIPPAGE_TOLERANCE_PERCENT / 100.0))
 
+        # EIP-1559 Transaction
+        max_priority_fee_sell = w3.eth.max_priority_fee
+        base_fee_sell = w3.eth.get_block('latest')['baseFeePerGas']
+        max_fee_per_gas_sell = base_fee_sell * 2 + max_priority_fee_sell
+
         sell_payload = {
             'from': account.address,
-            'gasPrice': w3.eth.gas_price,
-            'nonce': w3.eth.get_transaction_count(account.address)
+            'nonce': w3.eth.get_transaction_count(account.address),
+            'maxFeePerGas': max_fee_per_gas_sell,
+            'maxPriorityFeePerGas': max_priority_fee_sell,
+            'chainId': w3.eth.chain_id
         }
         gas_estimate_sell = sell_router_contract.functions.swapExactTokensForTokens(
             amount_received_wei, final_amount_out_min_wei, path_sell, account.address, int(time.time()) + 60 * 5
