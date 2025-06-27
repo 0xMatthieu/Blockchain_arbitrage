@@ -69,21 +69,31 @@ def check_and_approve_token(token_address, spender_address, amount_to_approve_we
     if allowance < amount_to_approve_wei:
         print(f"Allowance is {allowance}. Need {amount_to_approve_wei}. Approving...")
         
-        approve_txn = token_contract.functions.approve(
-            spender_address,
-            amount_to_approve_wei
-        ).build_transaction({
-            'from': account.address,
-            'nonce': w3.eth.get_transaction_count(account.address),
-            'gasPrice': w3.eth.gas_price,
-        })
-        
-        signed_txn = w3.eth.account.sign_transaction(approve_txn, PRIVATE_KEY)
-        tx_hash = w3.eth.send_raw_transaction(signed_txn.raw_transaction)
-        
-        print(f"Approval transaction sent. Hash: {tx_hash.hex()}. Waiting for confirmation...")
-        w3.eth.wait_for_transaction_receipt(tx_hash)
-        print(f"Token {token_address} approved for spender {spender_address}.")
+        try:
+            approve_payload = {
+                'from': account.address,
+                'nonce': w3.eth.get_transaction_count(account.address),
+                'gasPrice': w3.eth.gas_price,
+            }
+            gas_estimate = token_contract.functions.approve(
+                spender_address,
+                amount_to_approve_wei
+            ).estimate_gas(approve_payload)
+            approve_payload['gas'] = int(gas_estimate * 1.2) # Add 20% buffer
+
+            approve_txn = token_contract.functions.approve(
+                spender_address,
+                amount_to_approve_wei
+            ).build_transaction(approve_payload)
+            
+            signed_txn = w3.eth.account.sign_transaction(approve_txn, PRIVATE_KEY)
+            tx_hash = w3.eth.send_raw_transaction(signed_txn.raw_transaction)
+            
+            print(f"Approval transaction sent. Hash: {tx_hash.hex()}. Waiting for confirmation...")
+            w3.eth.wait_for_transaction_receipt(tx_hash)
+            print(f"Token {token_address} approved for spender {spender_address}.")
+        except Exception as e:
+            print(f"  - Could not send approval transaction: {e}")
     else:
         print("Sufficient allowance already set.")
 
@@ -120,23 +130,27 @@ def execute_trade(buy_pool, sell_pool, spread):
 
         path_buy = [BASE_CURRENCY_ADDRESS, TOKEN_ADDRESS]
         
-        # Get expected amount out from the router for an accurate on-chain price
         amounts_out = buy_router_contract.functions.getAmountsOut(amount_in_wei, path_buy).call()
         expected_amount_out_wei = amounts_out[1]
-        # Apply slippage to the on-chain expected amount
         amount_out_min_wei = int(expected_amount_out_wei * (1 - SLIPPAGE_TOLERANCE_PERCENT / 100.0))
         
+        buy_payload = {
+            'from': account.address,
+            'gasPrice': w3.eth.gas_price,
+            'nonce': w3.eth.get_transaction_count(account.address)
+        }
+        gas_estimate = buy_router_contract.functions.swapExactTokensForTokens(
+            amount_in_wei, amount_out_min_wei, path_buy, account.address, int(time.time()) + 60 * 5
+        ).estimate_gas(buy_payload)
+        buy_payload['gas'] = int(gas_estimate * 1.2)
+
         buy_txn = buy_router_contract.functions.swapExactTokensForTokens(
             amount_in_wei,
             amount_out_min_wei,
             path_buy,
             account.address,
             int(time.time()) + 60 * 5 # 5 minute deadline
-        ).build_transaction({
-            'from': account.address,
-            'gasPrice': w3.eth.gas_price,
-            'nonce': w3.eth.get_transaction_count(account.address)
-        })
+        ).build_transaction(buy_payload)
 
         signed_buy_txn = w3.eth.account.sign_transaction(buy_txn, PRIVATE_KEY)
         buy_tx_hash = w3.eth.send_raw_transaction(signed_buy_txn.raw_transaction)
@@ -149,7 +163,6 @@ def execute_trade(buy_pool, sell_pool, spread):
         
         print("  - Buy transaction successful! Parsing receipt for actual amount received...")
         
-        # --- Parse receipt to find exact amount of tokens received ---
         amount_received_wei = 0
         target_token_contract = w3.eth.contract(address=TOKEN_ADDRESS, abi=ERC20_ABI)
         target_decimals = target_token_contract.functions.decimals().call()
@@ -172,23 +185,27 @@ def execute_trade(buy_pool, sell_pool, spread):
         sell_router_contract = w3.eth.contract(address=sell_router_address, abi=UNISWAP_V2_ROUTER_ABI)
         path_sell = [TOKEN_ADDRESS, BASE_CURRENCY_ADDRESS]
         
-        # Get expected sell return from the router for an accurate on-chain price
         amounts_out_sell = sell_router_contract.functions.getAmountsOut(amount_received_wei, path_sell).call()
         expected_sell_return_wei = amounts_out_sell[1]
-        # Apply slippage to the on-chain expected amount
         final_amount_out_min_wei = int(expected_sell_return_wei * (1 - SLIPPAGE_TOLERANCE_PERCENT / 100.0))
 
+        sell_payload = {
+            'from': account.address,
+            'gasPrice': w3.eth.gas_price,
+            'nonce': w3.eth.get_transaction_count(account.address)
+        }
+        gas_estimate_sell = sell_router_contract.functions.swapExactTokensForTokens(
+            amount_received_wei, final_amount_out_min_wei, path_sell, account.address, int(time.time()) + 60 * 5
+        ).estimate_gas(sell_payload)
+        sell_payload['gas'] = int(gas_estimate_sell * 1.2)
+
         sell_txn = sell_router_contract.functions.swapExactTokensForTokens(
-            amount_received_wei, # Use the exact amount we received
+            amount_received_wei,
             final_amount_out_min_wei,
             path_sell,
             account.address,
             int(time.time()) + 60 * 5
-        ).build_transaction({
-            'from': account.address,
-            'gasPrice': w3.eth.gas_price,
-            'nonce': w3.eth.get_transaction_count(account.address)
-        })
+        ).build_transaction(sell_payload)
 
         signed_sell_txn = w3.eth.account.sign_transaction(sell_txn, PRIVATE_KEY)
         sell_tx_hash = w3.eth.send_raw_transaction(signed_sell_txn.raw_transaction)
