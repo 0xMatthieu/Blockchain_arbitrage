@@ -129,8 +129,11 @@ def execute_trade(buy_pool, sell_pool, spread):
 
     last_trade_attempt_ts = time.time() # Set cooldown immediately
 
+    buy_receipt = None
+    amount_received_wei = 0
+
+    # --- 1. BUY TRANSACTION ---
     try:
-        # --- 1. BUY TRANSACTION ---
         print(f"Step 1: Buying {TOKEN_ADDRESS} on {buy_dex_name}...")
         buy_router_contract = w3.eth.contract(address=buy_router_address, abi=UNISWAP_V2_ROUTER_ABI)
         
@@ -144,7 +147,6 @@ def execute_trade(buy_pool, sell_pool, spread):
         expected_amount_out_wei = amounts_out[1]
         amount_out_min_wei = int(expected_amount_out_wei * (1 - SLIPPAGE_TOLERANCE_PERCENT / 100.0))
         
-        # EIP-1559 Transaction
         max_priority_fee = w3.eth.max_priority_fee
         base_fee = w3.eth.get_block('latest')['baseFeePerGas']
         max_fee_per_gas = base_fee * 2 + max_priority_fee
@@ -164,11 +166,7 @@ def execute_trade(buy_pool, sell_pool, spread):
         buy_payload['gas'] = min(buffered_gas, MAX_GAS_LIMIT)
 
         buy_txn = buy_router_contract.functions.swapExactTokensForTokens(
-            amount_in_wei,
-            amount_out_min_wei,
-            path_buy,
-            account.address,
-            int(time.time()) + 60 * 5 # 5 minute deadline
+            amount_in_wei, amount_out_min_wei, path_buy, account.address, int(time.time()) + 60 * 5
         ).build_transaction(buy_payload)
 
         signed_buy_txn = w3.eth.account.sign_transaction(buy_txn, PRIVATE_KEY)
@@ -182,7 +180,6 @@ def execute_trade(buy_pool, sell_pool, spread):
         
         print("  - Buy transaction successful! Parsing receipt for actual amount received...")
         
-        amount_received_wei = 0
         target_token_contract = w3.eth.contract(address=TOKEN_ADDRESS, abi=ERC20_ABI)
         target_decimals = target_token_contract.functions.decimals().call()
         TRANSFER_EVENT_SIG = w3.keccak(text="Transfer(address,address,uint256)").hex()
@@ -199,7 +196,21 @@ def execute_trade(buy_pool, sell_pool, spread):
             print("  - CRITICAL: Could not determine received token amount from transaction logs. Aborting sell.")
             return
 
-        # --- 2. SELL TRANSACTION ---
+    except ValueError as e:
+        if 'is contract deployed correctly' in str(e) or 'execution reverted' in str(e):
+            print(f"  - TRANSACTION SIMULATION FAILED for {buy_dex_name}.")
+            print(f"  - This often means the DEX router is not compatible with Uniswap V2 (e.g., it's a V3 or Solidly-style router).")
+            print(f"  - Original error: {e}")
+            return
+        else:
+            print(f"An unexpected ValueError occurred during buy execution: {e}")
+            return
+    except Exception as e:
+        print(f"An unexpected error occurred during buy execution: {e}")
+        return
+
+    # --- 2. SELL TRANSACTION ---
+    try:
         print(f"Step 2: Selling {amount_received_wei / (10**target_decimals)} of {TOKEN_ADDRESS} on {sell_dex_name}...")
         sell_router_contract = w3.eth.contract(address=sell_router_address, abi=UNISWAP_V2_ROUTER_ABI)
         path_sell = [TOKEN_ADDRESS, BASE_CURRENCY_ADDRESS]
@@ -208,7 +219,6 @@ def execute_trade(buy_pool, sell_pool, spread):
         expected_sell_return_wei = amounts_out_sell[1]
         final_amount_out_min_wei = int(expected_sell_return_wei * (1 - SLIPPAGE_TOLERANCE_PERCENT / 100.0))
 
-        # EIP-1559 Transaction
         max_priority_fee_sell = w3.eth.max_priority_fee
         base_fee_sell = w3.eth.get_block('latest')['baseFeePerGas']
         max_fee_per_gas_sell = base_fee_sell * 2 + max_priority_fee_sell
@@ -228,11 +238,7 @@ def execute_trade(buy_pool, sell_pool, spread):
         sell_payload['gas'] = min(buffered_gas_sell, MAX_GAS_LIMIT)
 
         sell_txn = sell_router_contract.functions.swapExactTokensForTokens(
-            amount_received_wei,
-            final_amount_out_min_wei,
-            path_sell,
-            account.address,
-            int(time.time()) + 60 * 5
+            amount_received_wei, final_amount_out_min_wei, path_sell, account.address, int(time.time()) + 60 * 5
         ).build_transaction(sell_payload)
 
         signed_sell_txn = w3.eth.account.sign_transaction(sell_txn, PRIVATE_KEY)
@@ -245,8 +251,15 @@ def execute_trade(buy_pool, sell_pool, spread):
         else:
             print("  - Sell transaction successful! Arbitrage attempt complete.")
 
+    except ValueError as e:
+        if 'is contract deployed correctly' in str(e) or 'execution reverted' in str(e):
+            print(f"  - TRANSACTION SIMULATION FAILED for {sell_dex_name}.")
+            print(f"  - This often means the DEX router is not compatible with Uniswap V2 (e.g., it's a V3 or Solidly-style router).")
+            print(f"  - Original error: {e}")
+        else:
+            print(f"An unexpected ValueError occurred during sell execution: {e}")
     except Exception as e:
-        print(f"An error occurred during trade execution: {e}")
+        print(f"An unexpected error occurred during sell execution: {e}")
 
 
 def analyze_and_trade(pairs):
