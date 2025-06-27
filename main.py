@@ -5,6 +5,7 @@ import time
 from dotenv import load_dotenv
 import pandas as pd
 from web3 import Web3
+import websockets
 
 # --- Load Configuration from .env file ---
 load_dotenv()
