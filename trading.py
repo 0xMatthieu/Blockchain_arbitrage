@@ -25,13 +25,45 @@ def execute_trade(buy_pool, sell_pool, spread):
         return
 
     try:
-        # --- 1. BUY TRANSACTION ---
-        print(f"Step 1: Buying {TOKEN_ADDRESS} on {buy_dex_name} (v{buy_router_info['version']})...")
-        print(f"  - Buy Router Info: {buy_router_info}")
+        # --- Pre-flight checks ---
+        print("  - Performing pre-flight checks...")
         
+        # 1. Check wallet balance for the base currency
         base_token_contract = w3.eth.contract(address=BASE_CURRENCY_ADDRESS, abi=ERC20_ABI)
         base_decimals = base_token_contract.functions.decimals().call()
         amount_in_wei = int(TRADE_AMOUNT_BASE_TOKEN * (10**base_decimals))
+        wallet_balance_wei = base_token_contract.functions.balanceOf(account.address).call()
+
+        if wallet_balance_wei < amount_in_wei:
+            print(f"!!! TRADE SKIPPED: Insufficient balance. Have {wallet_balance_wei / (10**base_decimals):.6f}, need {TRADE_AMOUNT_BASE_TOKEN}.")
+            return
+        print(f"  - Wallet balance check passed. Have {wallet_balance_wei / (10**base_decimals):.6f}, need {TRADE_AMOUNT_BASE_TOKEN}.")
+
+        # 2. Check if trade size is a reasonable fraction of pool liquidity
+        trade_amount_usd = TRADE_AMOUNT_BASE_TOKEN * buy_pool.get('base_currency_price_usd', 0)
+        if trade_amount_usd == 0:
+            print("!!! TRADE SKIPPED: Could not determine USD value of trade amount.")
+            return
+
+        buy_liq_usd = buy_pool['liq_usd']
+        sell_liq_usd = sell_pool['liq_usd']
+        
+        # Trade shouldn't be more than 10% of liquidity to avoid high price impact
+        LIQUIDITY_IMPACT_THRESHOLD = 0.1 
+
+        if trade_amount_usd > buy_liq_usd * LIQUIDITY_IMPACT_THRESHOLD:
+            print(f"!!! TRADE SKIPPED: Trade size (${trade_amount_usd:,.2f}) is too large for buy pool liquidity (${buy_liq_usd:,.2f}).")
+            return
+
+        if trade_amount_usd > sell_liq_usd * LIQUIDITY_IMPACT_THRESHOLD:
+            print(f"!!! TRADE SKIPPED: Trade size (${trade_amount_usd:,.2f}) is too large for sell pool liquidity (${sell_liq_usd:,.2f}).")
+            return
+            
+        print(f"  - Liquidity check passed. Trade size ${trade_amount_usd:,.2f} is reasonable for both pools.")
+
+        # --- 1. BUY TRANSACTION ---
+        print(f"Step 1: Buying {TOKEN_ADDRESS} on {buy_dex_name} (v{buy_router_info['version']})...")
+        print(f"  - Buy Router Info: {buy_router_info}")
         print(f"  - Amount In (wei): {amount_in_wei}")
         
         target_token_contract = w3.eth.contract(address=TOKEN_ADDRESS, abi=ERC20_ABI)

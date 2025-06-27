@@ -76,14 +76,22 @@ def main():
                 if (p.get('priceNative') and p.get('quoteToken') and p.get('quoteToken').get('address') and
                     w3.to_checksum_address(p['quoteToken']['address']) == BASE_CURRENCY_ADDRESS and
                     p.get('liquidity') and p.get('liquidity').get('usd')):
+                    
+                    price_native = float(p['priceNative'])
+                    price_usd = float(p['priceUsd'])
+                    base_currency_price_usd = 0
+                    if price_native > 1e-18: # Avoid division by zero
+                        base_currency_price_usd = price_usd / price_native
+
                     current_pairs.append({
                         'dex': p['dexId'],
                         'chain' : p['chainId'],
                         'pair': f"{p['baseToken']['symbol']}/{p['quoteToken']['symbol']}",
-                        'price': float(p['priceNative']),
+                        'price': price_native,
                         'liq_usd': float(p['liquidity']['usd']),
                         'pairAddress': p['pairAddress'],
-                        'feeBps': p.get('feeBps', 0) # Get fee for V3, default to 0
+                        'feeBps': p.get('feeBps', 0), # Get fee for V3, default to 0
+                        'base_currency_price_usd': base_currency_price_usd
                     })
             
             if current_pairs:
