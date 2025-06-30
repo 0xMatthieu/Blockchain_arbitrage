@@ -6,7 +6,10 @@ from config import (
     TOKEN_ADDRESS, BASE_CURRENCY_ADDRESS, TRADE_AMOUNT_BASE_TOKEN, SLIPPAGE_TOLERANCE_PERCENT,
     RPC_MAX_RETRIES, RPC_BACKOFF_FACTOR
 )
-from abi import ERC20_ABI, UNISWAP_V2_ROUTER_ABI, UNISWAP_V3_ROUTER_ABI, SOLIDLY_ROUTER_ABI, SOLIDLY_FACTORY_ABI
+from abi import (
+    ERC20_ABI, UNISWAP_V2_ROUTER_ABI, UNISWAP_V3_ROUTER_ABI, SOLIDLY_ROUTER_ABI, 
+    SOLIDLY_FACTORY_ABI, UNISWAP_V3_POOL_ABI
+)
 from dex_utils import find_router_info
 
 def resilient_rpc_call(callable_func):
@@ -208,18 +211,52 @@ def execute_trade(buy_pool, sell_pool, spread):
         # --- Parse receipt for actual amount received ---
         print("  - Buy transaction successful! Parsing receipt...")
         amount_received_wei = 0
-        
-        try:
-            TRANSFER_EVENT_TOPIC = w3.keccak(text="Transfer(address,address,uint256)")
-            for log in buy_receipt.logs:
-                if len(log.topics) == 3 and log.topics[0] == TRANSFER_EVENT_TOPIC and log.address == TOKEN_ADDRESS:
-                    recipient_address = w3.to_checksum_address('0x' + log.topics[2].hex()[-40:])
-                    if recipient_address == account.address:
-                        amount_received_wei = w3.codec.decode(['uint256'], log.data)[0]
-                        print(f"  - Found transfer of {amount_received_wei / (10**target_decimals):.4f} tokens to wallet.")
+        TRANSFER_EVENT_TOPIC = w3.keccak(text="Transfer(address,address,uint256)")
+
+        # For V3, parse the Swap event to be more robust. Fallback to Transfer event if it fails.
+        if buy_router_info['version'] == 3:
+            try:
+                # 1. Find the pool address from the base currency transfer log
+                pool_address = None
+                for log in buy_receipt.logs:
+                    if log.address == BASE_CURRENCY_ADDRESS and \
+                       len(log.topics) == 3 and \
+                       log.topics[0] == TRANSFER_EVENT_TOPIC and \
+                       w3.to_checksum_address('0x' + log.topics[1].hex()[-40:]) == account.address:
+                        pool_address = w3.to_checksum_address('0x' + log.topics[2].hex()[-40:])
+                        print(f"  - Inferred V3 pool address: {pool_address}")
                         break
-        except Exception as e:
-            print(f"  - Error manually parsing transaction receipt for Transfer events: {e}")
+                
+                if pool_address:
+                    # 2. Find the Swap event from that pool and parse amount out
+                    pool_contract = w3.eth.contract(address=pool_address, abi=UNISWAP_V3_POOL_ABI)
+                    swap_events = pool_contract.events.Swap().process_receipt(buy_receipt, errors=DISCARD)
+                    for event in swap_events:
+                        if event['args']['recipient'] == account.address:
+                            amount0, amount1 = event['args']['amount0'], event['args']['amount1']
+                            # Amount received is the negative value (token leaving the pool)
+                            amount_received = abs(min(amount0, amount1))
+                            if amount_received > 0:
+                                amount_received_wei = amount_received
+                                print(f"  - Parsed amount from Swap event: {amount_received_wei / (10**target_decimals):.4f} tokens.")
+                                break
+            except Exception as e:
+                 print(f"  - Error parsing V3 Swap event from receipt: {e}. Falling back to simple Transfer parsing.")
+
+        # Fallback for V3 or standard logic for V2/other
+        if amount_received_wei == 0:
+            if buy_router_info['version'] == 3:
+                print("  - V3 Swap event parsing failed or found no amount. Trying generic Transfer event parsing...")
+            try:
+                for log in buy_receipt.logs:
+                    if len(log.topics) == 3 and log.topics[0] == TRANSFER_EVENT_TOPIC and log.address == TOKEN_ADDRESS:
+                        recipient_address = w3.to_checksum_address('0x' + log.topics[2].hex()[-40:])
+                        if recipient_address == account.address:
+                            amount_received_wei = w3.codec.decode(['uint256'], log.data)[0]
+                            print(f"  - Found transfer of {amount_received_wei / (10**target_decimals):.4f} tokens to wallet.")
+                            break
+            except Exception as e:
+                print(f"  - Error manually parsing transaction receipt for Transfer events: {e}")
 
         if amount_received_wei == 0:
             print("  - CRITICAL: Could not determine received token amount from receipt. Aborting sell.")
