@@ -17,6 +17,9 @@ TRADE_COOLDOWN_SECONDS = 60
 # --- Blockchain Configuration ---
 BASE_RPC_URL = os.getenv("BASE_RPC_URL")
 PRIVATE_KEY = os.getenv("PRIVATE_KEY")
+# Retry mechanism for RPC calls
+RPC_MAX_RETRIES = int(os.getenv("RPC_MAX_RETRIES", 5))
+RPC_BACKOFF_FACTOR = float(os.getenv("RPC_BACKOFF_FACTOR", 0.5))
 
 # --- Trading Configuration ---
 BASE_CURRENCY_ADDRESS_RAW = os.getenv("BASE_CURRENCY_ADDRESS")

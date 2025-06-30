@@ -169,26 +169,13 @@ SOLIDLY_ROUTER_ABI = [
 # Minimal ABI for a Solidly-style factory to get pool info
 SOLIDLY_FACTORY_ABI = [
     {
-        "inputs": [{"internalType": "address", "name": "pair", "type": "address"}],
-        "name": "getPairInformation",
-        "outputs": [
-            {"internalType": "address", "name": "token0", "type": "address"},
-            {"internalType": "address", "name": "token1", "type": "address"},
-            {"internalType": "bool", "name": "stable", "type": "bool"}
-        ],
-        "stateMutability": "view",
-        "type": "function"
-    },
-    {
         "inputs": [
             {"internalType": "address", "name": "tokenA", "type": "address"},
             {"internalType": "address", "name": "tokenB", "type": "address"},
             {"internalType": "bool", "name": "stable", "type": "bool"}
         ],
-        "name": "getPair",
-        "outputs": [
-            {"internalType": "address", "name": "pair", "type": "address"}
-        ],
+        "name": "getPool",
+        "outputs": [{"internalType": "address", "name": "pool", "type": "address"}],
         "stateMutability": "view",
         "type": "function"
     }

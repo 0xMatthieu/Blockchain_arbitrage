@@ -1,11 +1,33 @@
 import time
 from web3.logs import DISCARD
+from web3.exceptions import ContractLogicError
 from config import (
     w3, account, PRIVATE_KEY, MAX_GAS_LIMIT, DEX_ROUTERS,
-    TOKEN_ADDRESS, BASE_CURRENCY_ADDRESS, TRADE_AMOUNT_BASE_TOKEN, SLIPPAGE_TOLERANCE_PERCENT
+    TOKEN_ADDRESS, BASE_CURRENCY_ADDRESS, TRADE_AMOUNT_BASE_TOKEN, SLIPPAGE_TOLERANCE_PERCENT,
+    RPC_MAX_RETRIES, RPC_BACKOFF_FACTOR
 )
 from abi import ERC20_ABI, UNISWAP_V2_ROUTER_ABI, UNISWAP_V3_ROUTER_ABI, SOLIDLY_ROUTER_ABI, SOLIDLY_FACTORY_ABI
 from dex_utils import find_router_info
+
+def resilient_rpc_call(callable_func):
+    """
+    Tries to execute a callable that makes an RPC call, with exponential backoff.
+    A 'callable' is a function that takes no arguments, e.g., lambda: my_func(arg1, arg2)
+    """
+    for i in range(RPC_MAX_RETRIES):
+        try:
+            return callable_func()
+        except Exception as e:
+            # If it's a contract logic error (revert), don't retry, it will fail again.
+            if "execution reverted" in str(e) or isinstance(e, ContractLogicError):
+                print(f"  - Contract logic error (revert): {e}")
+                raise e
+            
+            wait_time = RPC_BACKOFF_FACTOR * (2 ** i)
+            print(f"\n  - RPC call failed with error: {e}. Retrying in {wait_time:.2f}s... ({i+1}/{RPC_MAX_RETRIES})")
+            time.sleep(wait_time)
+    raise Exception(f"RPC call failed after {RPC_MAX_RETRIES} retries.")
+
 
 def execute_trade(buy_pool, sell_pool, spread):
     print("\n" + "!"*60)
@@ -31,9 +53,9 @@ def execute_trade(buy_pool, sell_pool, spread):
         
         # 1. Check wallet balance for the base currency
         base_token_contract = w3.eth.contract(address=BASE_CURRENCY_ADDRESS, abi=ERC20_ABI)
-        base_decimals = base_token_contract.functions.decimals().call()
+        base_decimals = resilient_rpc_call(lambda: base_token_contract.functions.decimals().call())
         amount_in_wei = int(TRADE_AMOUNT_BASE_TOKEN * (10**base_decimals))
-        wallet_balance_wei = base_token_contract.functions.balanceOf(account.address).call()
+        wallet_balance_wei = resilient_rpc_call(lambda: base_token_contract.functions.balanceOf(account.address).call())
 
         if wallet_balance_wei < amount_in_wei:
             print(f"!!! TRADE SKIPPED: Insufficient balance. Have {wallet_balance_wei / (10**base_decimals):.6f}, need {TRADE_AMOUNT_BASE_TOKEN}.")
@@ -68,7 +90,7 @@ def execute_trade(buy_pool, sell_pool, spread):
         print(f"  - Amount In (wei): {amount_in_wei}")
         
         target_token_contract = w3.eth.contract(address=TOKEN_ADDRESS, abi=ERC20_ABI)
-        target_decimals = target_token_contract.functions.decimals().call()
+        target_decimals = resilient_rpc_call(lambda: target_token_contract.functions.decimals().call())
 
         # --- V2 BUY LOGIC ---
         if buy_router_info['version'] == 2:
@@ -82,27 +104,27 @@ def execute_trade(buy_pool, sell_pool, spread):
                     factory_contract = w3.eth.contract(address=factory_address, abi=SOLIDLY_FACTORY_ABI)
                     zero_address = "0x0000000000000000000000000000000000000000"
                     
-                    volatile_pair_address = zero_address
-                    stable_pair_address = zero_address
-
-                    # Make separate, resilient calls to check for each pool type
+                    pool_address = zero_address
+                    # Try to find a volatile pool first, then a stable one.
                     try:
-                        volatile_pair_address = factory_contract.functions.getPair(BASE_CURRENCY_ADDRESS, TOKEN_ADDRESS, False).call()
-                    except Exception as e:
-                        print(f"  - INFO: Could not query for volatile pair. Error: {e}")
+                        pool_address = resilient_rpc_call(lambda: factory_contract.functions.getPool(BASE_CURRENCY_ADDRESS, TOKEN_ADDRESS, False).call())
+                        if pool_address != zero_address:
+                            is_stable_pool = False
+                            print(f"  - Found volatile pool at address: {pool_address}")
+                    except ContractLogicError:
+                         print(f"  - INFO: Volatile pool not found or call reverted.")
+                         pool_address = zero_address # Ensure it's zero if reverted
+
+                    if pool_address == zero_address:
+                        try:
+                            pool_address = resilient_rpc_call(lambda: factory_contract.functions.getPool(BASE_CURRENCY_ADDRESS, TOKEN_ADDRESS, True).call())
+                            if pool_address != zero_address:
+                                is_stable_pool = True
+                                print(f"  - Found stable pool at address: {pool_address}")
+                        except ContractLogicError:
+                            print(f"  - INFO: Stable pool not found or call reverted.")
                     
-                    try:
-                        stable_pair_address = factory_contract.functions.getPair(BASE_CURRENCY_ADDRESS, TOKEN_ADDRESS, True).call()
-                    except Exception as e:
-                        print(f"  - INFO: Could not query for stable pair. Error: {e}")
-
-                    if volatile_pair_address != zero_address:
-                        is_stable_pool = False
-                        print(f"  - Found volatile pool at address: {volatile_pair_address}")
-                    elif stable_pair_address != zero_address:
-                        is_stable_pool = True
-                        print(f"  - Found stable pool at address: {stable_pair_address}")
-                    else:
+                    if pool_address == zero_address:
                         print("  - WARNING: Could not find a valid pool for this token pair in the factory. Defaulting to stable=False.")
                 else:
                     print("  - WARNING: 'factory' address not found in config for Solidly DEX. Defaulting to stable=False.")
@@ -110,7 +132,7 @@ def execute_trade(buy_pool, sell_pool, spread):
                 buy_router_contract = w3.eth.contract(address=buy_router_info['address'], abi=SOLIDLY_ROUTER_ABI)
                 routes_buy = [(BASE_CURRENCY_ADDRESS, TOKEN_ADDRESS, is_stable_pool)]
                 print(f"  - Solidly Route: {routes_buy}")
-                amounts_out = buy_router_contract.functions.getAmountsOut(amount_in_wei, routes_buy).call()
+                amounts_out = resilient_rpc_call(lambda: buy_router_contract.functions.getAmountsOut(amount_in_wei, routes_buy).call())
                 print(f"  - Solidly getAmountsOut result: {amounts_out}")
                 amount_out_min_wei = int(amounts_out[-1] * (1 - SLIPPAGE_TOLERANCE_PERCENT / 100.0))
                 print(f"  - Solidly Min Amount Out (wei): {amount_out_min_wei}")
@@ -121,7 +143,7 @@ def execute_trade(buy_pool, sell_pool, spread):
                 buy_router_contract = w3.eth.contract(address=buy_router_info['address'], abi=UNISWAP_V2_ROUTER_ABI)
                 path_buy = [BASE_CURRENCY_ADDRESS, TOKEN_ADDRESS]
                 print(f"  - V2 Path: {path_buy}")
-                amounts_out = buy_router_contract.functions.getAmountsOut(amount_in_wei, path_buy).call()
+                amounts_out = resilient_rpc_call(lambda: buy_router_contract.functions.getAmountsOut(amount_in_wei, path_buy).call())
                 print(f"  - V2 getAmountsOut result: {amounts_out}")
                 amount_out_min_wei = int(amounts_out[-1] * (1 - SLIPPAGE_TOLERANCE_PERCENT / 100.0))
                 print(f"  - V2 Min Amount Out (wei): {amount_out_min_wei}")
@@ -152,16 +174,20 @@ def execute_trade(buy_pool, sell_pool, spread):
 
         # --- Build and Send Buy Transaction ---
         print("  - Building buy transaction...")
-        max_priority_fee = w3.eth.max_priority_fee
-        base_fee = w3.eth.get_block('latest')['baseFeePerGas']
+        max_priority_fee = resilient_rpc_call(lambda: w3.eth.max_priority_fee)
+        latest_block = resilient_rpc_call(lambda: w3.eth.get_block('latest'))
+        base_fee = latest_block['baseFeePerGas']
         max_fee_per_gas = base_fee * 2 + max_priority_fee
+        
         buy_payload = {
-            'from': account.address, 'nonce': w3.eth.get_transaction_count(account.address),
-            'maxFeePerGas': max_fee_per_gas, 'maxPriorityFeePerGas': max_priority_fee,
-            'chainId': w3.eth.chain_id
+            'from': account.address, 
+            'nonce': resilient_rpc_call(lambda: w3.eth.get_transaction_count(account.address)),
+            'maxFeePerGas': max_fee_per_gas, 
+            'maxPriorityFeePerGas': max_priority_fee,
+            'chainId': resilient_rpc_call(lambda: w3.eth.chain_id)
         }
         print(f"  - Estimating gas with payload: {buy_payload}")
-        gas_estimate = swap_function.estimate_gas(buy_payload)
+        gas_estimate = resilient_rpc_call(lambda: swap_function.estimate_gas(buy_payload))
         print(f"  - Gas estimate: {gas_estimate}")
         buy_payload['gas'] = min(int(gas_estimate * 1.2), MAX_GAS_LIMIT)
         print(f"  - Final buy payload: {buy_payload}")
@@ -183,24 +209,15 @@ def execute_trade(buy_pool, sell_pool, spread):
         print("  - Buy transaction successful! Parsing receipt...")
         amount_received_wei = 0
         
-        # Manually parse logs to find the Transfer event to our address.
-        # This is more robust than process_receipt for complex swaps (e.g., V3).
         try:
-            # The signature hash of the Transfer event
             TRANSFER_EVENT_TOPIC = w3.keccak(text="Transfer(address,address,uint256)")
-            
             for log in buy_receipt.logs:
-                # Check if the log is a Transfer event for the correct token and has 3 topics
                 if len(log.topics) == 3 and log.topics[0] == TRANSFER_EVENT_TOPIC and log.address == TOKEN_ADDRESS:
-                    # The recipient address is the 3rd topic (index 2)
-                    # It's a 32-byte value, we need the last 20 bytes for the address
                     recipient_address = w3.to_checksum_address('0x' + log.topics[2].hex()[-40:])
-                    
                     if recipient_address == account.address:
-                        # The value is in the data field, decode it as a uint256
                         amount_received_wei = w3.codec.decode(['uint256'], log.data)[0]
                         print(f"  - Found transfer of {amount_received_wei / (10**target_decimals):.4f} tokens to wallet.")
-                        break # Stop after finding the transfer to us
+                        break
         except Exception as e:
             print(f"  - Error manually parsing transaction receipt for Transfer events: {e}")
 
@@ -216,7 +233,7 @@ def execute_trade(buy_pool, sell_pool, spread):
         if sell_router_info['version'] == 2:
             sell_router_type = sell_router_info.get('type', 'uniswapv2')
             if sell_router_type == 'solidly':
-                is_stable_pool = False # Default value
+                is_stable_pool = False
                 factory_address = sell_router_info.get('factory')
 
                 if factory_address:
@@ -224,27 +241,26 @@ def execute_trade(buy_pool, sell_pool, spread):
                     factory_contract = w3.eth.contract(address=factory_address, abi=SOLIDLY_FACTORY_ABI)
                     zero_address = "0x0000000000000000000000000000000000000000"
                     
-                    volatile_pair_address = zero_address
-                    stable_pair_address = zero_address
-
-                    # Make separate, resilient calls to check for each pool type
+                    pool_address = zero_address
                     try:
-                        volatile_pair_address = factory_contract.functions.getPair(TOKEN_ADDRESS, BASE_CURRENCY_ADDRESS, False).call()
-                    except Exception as e:
-                        print(f"  - INFO: Could not query for volatile pair. Error: {e}")
-                    
-                    try:
-                        stable_pair_address = factory_contract.functions.getPair(TOKEN_ADDRESS, BASE_CURRENCY_ADDRESS, True).call()
-                    except Exception as e:
-                        print(f"  - INFO: Could not query for stable pair. Error: {e}")
+                        pool_address = resilient_rpc_call(lambda: factory_contract.functions.getPool(TOKEN_ADDRESS, BASE_CURRENCY_ADDRESS, False).call())
+                        if pool_address != zero_address:
+                            is_stable_pool = False
+                            print(f"  - Found volatile pool at address: {pool_address}")
+                    except ContractLogicError:
+                        print(f"  - INFO: Volatile pool not found or call reverted.")
+                        pool_address = zero_address
 
-                    if volatile_pair_address != zero_address:
-                        is_stable_pool = False
-                        print(f"  - Found volatile pool at address: {volatile_pair_address}")
-                    elif stable_pair_address != zero_address:
-                        is_stable_pool = True
-                        print(f"  - Found stable pool at address: {stable_pair_address}")
-                    else:
+                    if pool_address == zero_address:
+                        try:
+                            pool_address = resilient_rpc_call(lambda: factory_contract.functions.getPool(TOKEN_ADDRESS, BASE_CURRENCY_ADDRESS, True).call())
+                            if pool_address != zero_address:
+                                is_stable_pool = True
+                                print(f"  - Found stable pool at address: {pool_address}")
+                        except ContractLogicError:
+                            print(f"  - INFO: Stable pool not found or call reverted.")
+
+                    if pool_address == zero_address:
                         print("  - WARNING: Could not find a valid pool for this token pair in the factory. Defaulting to stable=False.")
                 else:
                     print("  - WARNING: 'factory' address not found in config for Solidly DEX. Defaulting to stable=False.")
@@ -252,7 +268,7 @@ def execute_trade(buy_pool, sell_pool, spread):
                 sell_router_contract = w3.eth.contract(address=sell_router_info['address'], abi=SOLIDLY_ROUTER_ABI)
                 routes_sell = [(TOKEN_ADDRESS, BASE_CURRENCY_ADDRESS, is_stable_pool)]
                 print(f"  - Solidly Route: {routes_sell}")
-                amounts_out_sell = sell_router_contract.functions.getAmountsOut(amount_received_wei, routes_sell).call()
+                amounts_out_sell = resilient_rpc_call(lambda: sell_router_contract.functions.getAmountsOut(amount_received_wei, routes_sell).call())
                 print(f"  - Solidly getAmountsOut result: {amounts_out_sell}")
                 final_amount_out_min_wei = int(amounts_out_sell[-1] * (1 - SLIPPAGE_TOLERANCE_PERCENT / 100.0))
                 print(f"  - Solidly Min Amount Out (wei): {final_amount_out_min_wei}")
@@ -263,7 +279,7 @@ def execute_trade(buy_pool, sell_pool, spread):
                 sell_router_contract = w3.eth.contract(address=sell_router_info['address'], abi=UNISWAP_V2_ROUTER_ABI)
                 path_sell = [TOKEN_ADDRESS, BASE_CURRENCY_ADDRESS]
                 print(f"  - V2 Path: {path_sell}")
-                amounts_out_sell = sell_router_contract.functions.getAmountsOut(amount_received_wei, path_sell).call()
+                amounts_out_sell = resilient_rpc_call(lambda: sell_router_contract.functions.getAmountsOut(amount_received_wei, path_sell).call())
                 print(f"  - V2 getAmountsOut result: {amounts_out_sell}")
                 final_amount_out_min_wei = int(amounts_out_sell[-1] * (1 - SLIPPAGE_TOLERANCE_PERCENT / 100.0))
                 print(f"  - V2 Min Amount Out (wei): {final_amount_out_min_wei}")
@@ -293,12 +309,14 @@ def execute_trade(buy_pool, sell_pool, spread):
         # --- Build and Send Sell Transaction ---
         print("  - Building sell transaction...")
         sell_payload = {
-            'from': account.address, 'nonce': w3.eth.get_transaction_count(account.address),
-            'maxFeePerGas': max_fee_per_gas, 'maxPriorityFeePerGas': max_priority_fee,
-            'chainId': w3.eth.chain_id
+            'from': account.address, 
+            'nonce': resilient_rpc_call(lambda: w3.eth.get_transaction_count(account.address)),
+            'maxFeePerGas': max_fee_per_gas, 
+            'maxPriorityFeePerGas': max_priority_fee,
+            'chainId': resilient_rpc_call(lambda: w3.eth.chain_id)
         }
         print(f"  - Estimating gas with payload: {sell_payload}")
-        gas_estimate_sell = sell_swap_function.estimate_gas(sell_payload)
+        gas_estimate_sell = resilient_rpc_call(lambda: sell_swap_function.estimate_gas(sell_payload))
         print(f"  - Gas estimate: {gas_estimate_sell}")
         sell_payload['gas'] = min(int(gas_estimate_sell * 1.2), MAX_GAS_LIMIT)
         print(f"  - Final sell payload: {sell_payload}")
