@@ -1,4 +1,5 @@
 import time
+from web3.logs import DISCARD
 from config import (
     w3, account, PRIVATE_KEY, MAX_GAS_LIMIT, DEX_ROUTERS,
     TOKEN_ADDRESS, BASE_CURRENCY_ADDRESS, TRADE_AMOUNT_BASE_TOKEN, SLIPPAGE_TOLERANCE_PERCENT
@@ -153,7 +154,7 @@ def execute_trade(buy_pool, sell_pool, spread):
         # Use web3.py's event processing to find the Transfer event to our address.
         # This is more robust than manually parsing logs.
         try:
-            transfer_events = target_token_contract.events.Transfer().process_receipt(buy_receipt, errors=w3.DISCARD)
+            transfer_events = target_token_contract.events.Transfer().process_receipt(buy_receipt, errors=DISCARD)
             for event in transfer_events:
                 if event.args.to == account.address:
                     amount_received_wei = event.args.value
