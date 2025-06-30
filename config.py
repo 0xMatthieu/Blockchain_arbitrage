@@ -23,9 +23,14 @@ BASE_CURRENCY_ADDRESS_RAW = os.getenv("BASE_CURRENCY_ADDRESS")
 TRADE_AMOUNT_BASE_TOKEN = float(os.getenv("TRADE_AMOUNT_BASE_TOKEN", 0.0))
 SLIPPAGE_TOLERANCE_PERCENT = float(os.getenv("SLIPPAGE_TOLERANCE_PERCENT", 1.0))
 MAX_GAS_LIMIT = int(os.getenv("MAX_GAS_LIMIT", 500000))
+
+# --- DEX Router Configuration Loading with Debugging ---
+dex_routers_env_string = os.getenv("DEX_ROUTERS")
+print(f"DEBUG: Raw DEX_ROUTERS string from .env: {dex_routers_env_string}")
+
 try:
     # Use json.loads for safer and more standard parsing of the DEX_ROUTERS string
-    DEX_ROUTERS_RAW = json.loads(os.getenv("DEX_ROUTERS", '{}'))
+    DEX_ROUTERS_RAW = json.loads(dex_routers_env_string or '{}')
 except json.JSONDecodeError as e:
     print(f"CRITICAL: Could not parse DEX_ROUTERS from .env file. Please ensure it is valid JSON. Error: {e}")
     DEX_ROUTERS_RAW = {}
