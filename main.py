@@ -37,6 +37,8 @@ def analyze_and_trade(pairs):
         last_trade_attempt_ts = time.time()
 
 def main():
+    check_dex = False
+
     if not all([TOKEN_ADDRESS, BASE_CURRENCY_ADDRESS, account]):
         print("Error: Core configuration (TOKEN_ADDRESS, BASE_CURRENCY_ADDRESS, PRIVATE_KEY) is missing.")
         return
@@ -48,13 +50,13 @@ def main():
     base_token_contract = w3.eth.contract(address=BASE_CURRENCY_ADDRESS, abi=ERC20_ABI)
     base_decimals = base_token_contract.functions.decimals().call()
     amount_to_approve_wei = int(TRADE_AMOUNT_BASE_TOKEN * (10**base_decimals))
-
-    for dex, info in DEX_ROUTERS.items():
-        print(f"\nChecking {dex.upper()} router ({info['address']})...")
-        check_and_approve_token(BASE_CURRENCY_ADDRESS, info['address'], amount_to_approve_wei)
-        check_and_approve_token(TOKEN_ADDRESS, info['address'], w3.to_wei(2**64 - 1, 'ether'))
-        time.sleep(1)
-    print("--- Initial Approval Checks Complete ---\n")
+    if check_dex:
+        for dex, info in DEX_ROUTERS.items():
+            print(f"\nChecking {dex.upper()} router ({info['address']})...")
+            check_and_approve_token(BASE_CURRENCY_ADDRESS, info['address'], amount_to_approve_wei)
+            check_and_approve_token(TOKEN_ADDRESS, info['address'], w3.to_wei(2**64 - 1, 'ether'))
+            time.sleep(1)
+        print("--- Initial Approval Checks Complete ---\n")
 
     api_url = f"https://api.dexscreener.com/latest/dex/tokens/{TOKEN_ADDRESS}"
     print(f"Starting arbitrage analysis for token: {TOKEN_ADDRESS}")
