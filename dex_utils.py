@@ -3,11 +3,31 @@ from config import w3, account, PRIVATE_KEY, MAX_GAS_LIMIT
 from abi import ERC20_ABI
 
 def find_router_info(dex_id, routers):
-    """Finds a router's info (address and version) with flexible matching."""
+    """Finds a router's info with robust matching, preferring higher versions."""
+    dex_id = dex_id.lower().strip()
+    
+    possible_matches = []
     for key, info in routers.items():
-        if dex_id in key or key in dex_id:
-            return info
-    return None
+        # A key matches if it is the dex_id, or if its first part (split by _) matches the dex_id.
+        # e.g., 'uniswap' should match 'uniswap_v2' and 'uniswap_v3'.
+        # 'baseswap' should match 'baseswap'.
+        # 'swap' should NOT match 'baseswap'.
+        key_parts = key.replace('-', '_').split('_')
+        if dex_id == key or dex_id == key_parts[0]:
+            possible_matches.append(info)
+
+    if not possible_matches:
+        print(f"DEBUG: No router match found for dex_id '{dex_id}'. Available router keys: {list(routers.keys())}")
+        return None
+
+    if len(possible_matches) == 1:
+        return possible_matches[0]
+
+    # If multiple matches are found (e.g., uniswap_v2 and uniswap_v3 for 'uniswap'),
+    # prefer the one with the highest version number.
+    print(f"DEBUG: Found multiple possible routers for '{dex_id}'. Selecting highest version.")
+    possible_matches.sort(key=lambda x: x.get('version', 0), reverse=True)
+    return possible_matches[0]
 
 def check_and_approve_token(token_address, spender_address, amount_to_approve_wei):
     if not account or not token_address or not spender_address:
