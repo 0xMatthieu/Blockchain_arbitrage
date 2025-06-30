@@ -37,7 +37,8 @@ def analyze_and_trade(pairs):
         last_trade_attempt_ts = time.time()
 
 def main():
-    check_dex = False
+    # This flag should be True to ensure all routers are approved to spend tokens.
+    check_dex = True
 
     if not all([TOKEN_ADDRESS, BASE_CURRENCY_ADDRESS, account]):
         print("Error: Core configuration (TOKEN_ADDRESS, BASE_CURRENCY_ADDRESS, PRIVATE_KEY) is missing.")
@@ -46,15 +47,22 @@ def main():
     if account:
         print(f"Bot wallet address: {account.address}")
 
-    print("--- Running Initial Approval Checks ---")
-    base_token_contract = w3.eth.contract(address=BASE_CURRENCY_ADDRESS, abi=ERC20_ABI)
-    base_decimals = base_token_contract.functions.decimals().call()
-    amount_to_approve_wei = int(TRADE_AMOUNT_BASE_TOKEN * (10**base_decimals))
     if check_dex:
+        print("--- Running Initial Approval Checks ---")
+        base_token_contract = w3.eth.contract(address=BASE_CURRENCY_ADDRESS, abi=ERC20_ABI)
+        base_decimals = base_token_contract.functions.decimals().call()
+        amount_to_approve_wei = int(TRADE_AMOUNT_BASE_TOKEN * (10**base_decimals))
+
+        # We set a very high (practically unlimited) approval for the target token
+        # to avoid needing to re-approve it later.
+        unlimited_allowance = 2**256 - 1
+
         for dex, info in DEX_ROUTERS.items():
             print(f"\nChecking {dex.upper()} router ({info['address']})...")
+            # Approve the router to spend the base currency for the buy part of the trade
             check_and_approve_token(BASE_CURRENCY_ADDRESS, info['address'], amount_to_approve_wei)
-            check_and_approve_token(TOKEN_ADDRESS, info['address'], w3.to_wei(2**64 - 1, 'ether'))
+            # Approve the router to spend the target token for the sell part of the trade
+            check_and_approve_token(TOKEN_ADDRESS, info['address'], unlimited_allowance)
             time.sleep(1)
         print("--- Initial Approval Checks Complete ---\n")
 

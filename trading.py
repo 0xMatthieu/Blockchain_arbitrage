@@ -8,7 +8,7 @@ from config import (
 )
 from abi import (
     ERC20_ABI, UNISWAP_V2_ROUTER_ABI, UNISWAP_V3_ROUTER_ABI, SOLIDLY_ROUTER_ABI, 
-    SOLIDLY_FACTORY_ABI, UNISWAP_V3_POOL_ABI, UNISWAP_V3_FACTORY_ABI
+    SOLIDLY_FACTORY_ABI, UNISWAP_V3_POOL_ABI, UNISWAP_V3_FACTORY_ABI, SOLIDLY_PAIR_ABI
 )
 from dex_utils import find_router_info
 
@@ -99,61 +99,41 @@ def execute_trade(buy_pool, sell_pool, spread):
         if buy_router_info['version'] == 2:
             buy_router_type = buy_router_info.get('type', 'uniswapv2')
             if buy_router_type == 'solidly':
-                is_stable_pool = False  # Default value
                 factory_address = buy_router_info.get('factory')
+                if not factory_address:
+                    raise ValueError(f"Solidly DEX '{buy_dex_name}' requires a 'factory' address.")
 
-                if factory_address:
-                    print(f"  - Solidly DEX detected. Determining pool type from factory {factory_address}...")
-                    factory_contract = w3.eth.contract(address=factory_address, abi=SOLIDLY_FACTORY_ABI)
-                    zero_address = "0x0000000000000000000000000000000000000000"
-                    
-                    pool_address = zero_address
-                    # Try to find a volatile pool first, then a stable one.
-                    try:
-                        pool_address = resilient_rpc_call(lambda: factory_contract.functions.getPool(BASE_CURRENCY_ADDRESS, TOKEN_ADDRESS, False).call())
-                        if pool_address != zero_address:
-                            is_stable_pool = False
-                            print(f"  - Found volatile pool at address: {pool_address}")
-                    except ContractLogicError:
-                         print(f"  - INFO: Volatile pool not found or call reverted.")
-                         pool_address = zero_address # Ensure it's zero if reverted
-
-                    if pool_address == zero_address:
-                        try:
-                            pool_address = resilient_rpc_call(lambda: factory_contract.functions.getPool(BASE_CURRENCY_ADDRESS, TOKEN_ADDRESS, True).call())
-                            if pool_address != zero_address:
-                                is_stable_pool = True
-                                print(f"  - Found stable pool at address: {pool_address}")
-                        except ContractLogicError:
-                            print(f"  - INFO: Stable pool not found or call reverted.")
-                    
-                    if pool_address == zero_address:
-                        print("  - WARNING: Could not find a valid pool for this token pair in the factory. Defaulting to stable=False.")
-                else:
-                    print("  - WARNING: 'factory' address not found in config for Solidly DEX. Defaulting to stable=False.")
+                print(f"  - Solidly DEX detected. Determining pool type and reserves from factory {factory_address}...")
+                factory_contract = w3.eth.contract(address=factory_address, abi=SOLIDLY_FACTORY_ABI)
+                zero_address = "0x0000000000000000000000000000000000000000"
                 
+                is_stable_pool = False
+                pool_address = resilient_rpc_call(lambda: factory_contract.functions.getPool(BASE_CURRENCY_ADDRESS, TOKEN_ADDRESS, is_stable_pool).call())
+                if pool_address == zero_address:
+                    is_stable_pool = True
+                    pool_address = resilient_rpc_call(lambda: factory_contract.functions.getPool(BASE_CURRENCY_ADDRESS, TOKEN_ADDRESS, is_stable_pool).call())
+
+                if pool_address == zero_address:
+                    raise ValueError(f"Could not find any valid pool for this pair on Solidly DEX {buy_dex_name}.")
+                
+                print(f"  - Found pool: {'Stable' if is_stable_pool else 'Volatile'} at {pool_address}")
+
+                # Check for sufficient reserves
+                pair_contract = w3.eth.contract(address=pool_address, abi=SOLIDLY_PAIR_ABI)
+                reserves = resilient_rpc_call(lambda: pair_contract.functions.getReserves().call())
+                if reserves[0] == 0 or reserves[1] == 0:
+                    raise ValueError(f"Pool {pool_address} on {buy_dex_name} has zero reserves. Skipping trade.")
+                print(f"  - Pool reserves are non-zero. Reserve0: {reserves[0]}, Reserve1: {reserves[1]}")
+
                 buy_router_contract = w3.eth.contract(address=buy_router_info['address'], abi=SOLIDLY_ROUTER_ABI)
-                routes_buy = [(BASE_CURRENCY_ADDRESS, TOKEN_ADDRESS, is_stable_pool)]
+                routes_buy = [(BASE_CURRENCY_ADDRESS, TOKEN_ADDRESS, is_stable_pool, factory_address)]
                 print(f"  - Solidly Route: {routes_buy}")
                 
-                amount_out_min_wei = 0
-                try:
-                    # Preferred method: get amount from router
-                    print("  - Attempting to get amount out from router...")
-                    amounts_out = resilient_rpc_call(lambda: buy_router_contract.functions.getAmountsOut(amount_in_wei, routes_buy).call({'from': account.address}))
-                    print(f"  - Solidly getAmountsOut result: {amounts_out}")
-                    amount_out_min_wei = int(amounts_out[-1] * (1 - SLIPPAGE_TOLERANCE_PERCENT / 100.0))
-                except Exception as e:
-                    print(f"  - WARNING: getAmountsOut failed: {e}. Falling back to manual calculation from API price.")
-                
-                if amount_out_min_wei == 0:
-                    # Fallback method: calculate from DexScreener price
-                    expected_amount_out_float = TRADE_AMOUNT_BASE_TOKEN / buy_pool['price']
-                    min_amount_out_float = expected_amount_out_float * (1 - SLIPPAGE_TOLERANCE_PERCENT / 100.0)
-                    amount_out_min_wei = int(min_amount_out_float * (10**target_decimals))
-                    print("  - Calculated min amount out using API price.")
+                # Get quote directly from router. If this fails, abort.
+                amounts_out = resilient_rpc_call(lambda: buy_router_contract.functions.getAmountsOut(amount_in_wei, routes_buy).call({'from': account.address}))
+                amount_out_min_wei = int(amounts_out[-1] * (1 - SLIPPAGE_TOLERANCE_PERCENT / 100.0))
 
-                print(f"  - Solidly Min Amount Out (wei): {amount_out_min_wei}")
+                print(f"  - Solidly Min Amount Out (from quote): {amount_out_min_wei}")
                 swap_function = buy_router_contract.functions.swapExactTokensForTokens(
                     amount_in_wei, amount_out_min_wei, routes_buy, account.address, int(time.time()) + 300
                 )
@@ -318,61 +298,39 @@ def execute_trade(buy_pool, sell_pool, spread):
         if sell_router_info['version'] == 2:
             sell_router_type = sell_router_info.get('type', 'uniswapv2')
             if sell_router_type == 'solidly':
-                is_stable_pool = False
                 factory_address = sell_router_info.get('factory')
+                if not factory_address:
+                    raise ValueError(f"Solidly DEX '{sell_dex_name}' requires a 'factory' address.")
 
-                if factory_address:
-                    print(f"  - Solidly DEX detected. Determining pool type from factory {factory_address}...")
-                    factory_contract = w3.eth.contract(address=factory_address, abi=SOLIDLY_FACTORY_ABI)
-                    zero_address = "0x0000000000000000000000000000000000000000"
-                    
-                    pool_address = zero_address
-                    try:
-                        pool_address = resilient_rpc_call(lambda: factory_contract.functions.getPool(TOKEN_ADDRESS, BASE_CURRENCY_ADDRESS, False).call())
-                        if pool_address != zero_address:
-                            is_stable_pool = False
-                            print(f"  - Found volatile pool at address: {pool_address}")
-                    except ContractLogicError:
-                        print(f"  - INFO: Volatile pool not found or call reverted.")
-                        pool_address = zero_address
+                print(f"  - Solidly DEX detected. Determining pool type and reserves from factory {factory_address}...")
+                factory_contract = w3.eth.contract(address=factory_address, abi=SOLIDLY_FACTORY_ABI)
+                zero_address = "0x0000000000000000000000000000000000000000"
 
-                    if pool_address == zero_address:
-                        try:
-                            pool_address = resilient_rpc_call(lambda: factory_contract.functions.getPool(TOKEN_ADDRESS, BASE_CURRENCY_ADDRESS, True).call())
-                            if pool_address != zero_address:
-                                is_stable_pool = True
-                                print(f"  - Found stable pool at address: {pool_address}")
-                        except ContractLogicError:
-                            print(f"  - INFO: Stable pool not found or call reverted.")
+                is_stable_pool = False
+                pool_address = resilient_rpc_call(lambda: factory_contract.functions.getPool(TOKEN_ADDRESS, BASE_CURRENCY_ADDRESS, is_stable_pool).call())
+                if pool_address == zero_address:
+                    is_stable_pool = True
+                    pool_address = resilient_rpc_call(lambda: factory_contract.functions.getPool(TOKEN_ADDRESS, BASE_CURRENCY_ADDRESS, is_stable_pool).call())
+                
+                if pool_address == zero_address:
+                    raise ValueError(f"Could not find any valid pool for this pair on Solidly DEX {sell_dex_name}.")
 
-                    if pool_address == zero_address:
-                        print("  - WARNING: Could not find a valid pool for this token pair in the factory. Defaulting to stable=False.")
-                else:
-                    print("  - WARNING: 'factory' address not found in config for Solidly DEX. Defaulting to stable=False.")
+                print(f"  - Found pool: {'Stable' if is_stable_pool else 'Volatile'} at {pool_address}")
+
+                pair_contract = w3.eth.contract(address=pool_address, abi=SOLIDLY_PAIR_ABI)
+                reserves = resilient_rpc_call(lambda: pair_contract.functions.getReserves().call())
+                if reserves[0] == 0 or reserves[1] == 0:
+                    raise ValueError(f"Pool {pool_address} on {sell_dex_name} has zero reserves. Skipping trade.")
+                print(f"  - Pool reserves are non-zero. Reserve0: {reserves[0]}, Reserve1: {reserves[1]}")
 
                 sell_router_contract = w3.eth.contract(address=sell_router_info['address'], abi=SOLIDLY_ROUTER_ABI)
-                routes_sell = [(TOKEN_ADDRESS, BASE_CURRENCY_ADDRESS, is_stable_pool)]
+                routes_sell = [(TOKEN_ADDRESS, BASE_CURRENCY_ADDRESS, is_stable_pool, factory_address)]
                 print(f"  - Solidly Route: {routes_sell}")
 
-                final_amount_out_min_wei = 0
-                try:
-                    # Preferred method: get amount from router
-                    print("  - Attempting to get amount out from router...")
-                    amounts_out_sell = resilient_rpc_call(lambda: sell_router_contract.functions.getAmountsOut(amount_received_wei, routes_sell).call({'from': account.address}))
-                    print(f"  - Solidly getAmountsOut result: {amounts_out_sell}")
-                    final_amount_out_min_wei = int(amounts_out_sell[-1] * (1 - SLIPPAGE_TOLERANCE_PERCENT / 100.0))
-                except Exception as e:
-                    print(f"  - WARNING: getAmountsOut failed: {e}. Falling back to manual calculation from API price.")
+                amounts_out_sell = resilient_rpc_call(lambda: sell_router_contract.functions.getAmountsOut(amount_received_wei, routes_sell).call({'from': account.address}))
+                final_amount_out_min_wei = int(amounts_out_sell[-1] * (1 - SLIPPAGE_TOLERANCE_PERCENT / 100.0))
 
-                if final_amount_out_min_wei == 0:
-                    # Fallback method: calculate from DexScreener price
-                    amount_received_float = amount_received_wei / (10**target_decimals)
-                    expected_sell_return_float = amount_received_float * sell_pool['price']
-                    min_sell_return_float = expected_sell_return_float * (1 - SLIPPAGE_TOLERANCE_PERCENT / 100.0)
-                    final_amount_out_min_wei = int(min_sell_return_float * (10**base_decimals))
-                    print("  - Calculated min amount out using API price.")
-
-                print(f"  - Solidly Min Amount Out (wei): {final_amount_out_min_wei}")
+                print(f"  - Solidly Min Amount Out (from quote): {final_amount_out_min_wei}")
                 sell_swap_function = sell_router_contract.functions.swapExactTokensForTokens(
                     amount_received_wei, final_amount_out_min_wei, routes_sell, account.address, int(time.time()) + 300
                 )

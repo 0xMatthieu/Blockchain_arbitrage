@@ -160,7 +160,8 @@ SOLIDLY_ROUTER_ABI = [
                 "components": [
                     {"internalType": "address", "name": "from", "type": "address"},
                     {"internalType": "address", "name": "to", "type": "address"},
-                    {"internalType": "bool", "name": "stable", "type": "bool"}
+                    {"internalType": "bool", "name": "stable", "type": "bool"},
+                    {"internalType": "address", "name": "factory", "type": "address"}
                 ],
                 "internalType": "struct IRouter.Route[]",
                 "name": "routes",
@@ -182,7 +183,8 @@ SOLIDLY_ROUTER_ABI = [
                 "components": [
                     {"internalType": "address", "name": "from", "type": "address"},
                     {"internalType": "address", "name": "to", "type": "address"},
-                    {"internalType": "bool", "name": "stable", "type": "bool"}
+                    {"internalType": "bool", "name": "stable", "type": "bool"},
+                    {"internalType": "address", "name": "factory", "type": "address"}
                 ],
                 "internalType": "struct IRouter.Route[]",
                 "name": "routes",
@@ -210,6 +212,23 @@ SOLIDLY_FACTORY_ABI = [
         ],
         "name": "getPool",
         "outputs": [{"internalType": "address", "name": "pool", "type": "address"}],
+        "stateMutability": "view",
+        "type": "function"
+    }
+]
+
+# Minimal ABI for a Solidly/V2-style pair to check reserves
+SOLIDLY_PAIR_ABI = [
+    {
+        "constant": True,
+        "inputs": [],
+        "name": "getReserves",
+        "outputs": [
+            {"internalType": "uint112", "name": "_reserve0", "type": "uint112"},
+            {"internalType": "uint112", "name": "_reserve1", "type": "uint112"},
+            {"internalType": "uint32", "name": "_blockTimestampLast", "type": "uint32"}
+        ],
+        "payable": False,
         "stateMutability": "view",
         "type": "function"
     }
