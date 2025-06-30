@@ -186,7 +186,9 @@ def execute_trade(buy_pool, sell_pool, spread):
             }
 
             print("  - Simulating V3 swap to get exact amount out...")
-            quoted_amount_out_wei = resilient_rpc_call(lambda: buy_router_contract.functions.exactInputSingle(temp_swap_params).call({'from': account.address}))
+            # Provide a gas limit for the simulation call to prevent node issues
+            call_options = {'from': account.address, 'gas': MAX_GAS_LIMIT}
+            quoted_amount_out_wei = resilient_rpc_call(lambda: buy_router_contract.functions.exactInputSingle(temp_swap_params).call(call_options))
             
             amount_out_min_wei = int(quoted_amount_out_wei * (1 - SLIPPAGE_TOLERANCE_PERCENT / 100.0))
             print(f"  - V3 Min Amount Out (from quote): {amount_out_min_wei}")
@@ -382,7 +384,9 @@ def execute_trade(buy_pool, sell_pool, spread):
             }
             
             print("  - Simulating V3 swap to get exact amount out...")
-            quoted_final_amount_out_wei = resilient_rpc_call(lambda: sell_router_contract.functions.exactInputSingle(temp_sell_params).call({'from': account.address}))
+            # Provide a gas limit for the simulation call to prevent node issues
+            call_options_sell = {'from': account.address, 'gas': MAX_GAS_LIMIT}
+            quoted_final_amount_out_wei = resilient_rpc_call(lambda: sell_router_contract.functions.exactInputSingle(temp_sell_params).call(call_options_sell))
             
             final_amount_out_min_wei = int(quoted_final_amount_out_wei * (1 - SLIPPAGE_TOLERANCE_PERCENT / 100.0))
             print(f"  - V3 Min Amount Out (from quote): {final_amount_out_min_wei}")
