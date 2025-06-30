@@ -24,8 +24,10 @@ TRADE_AMOUNT_BASE_TOKEN = float(os.getenv("TRADE_AMOUNT_BASE_TOKEN", 0.0))
 SLIPPAGE_TOLERANCE_PERCENT = float(os.getenv("SLIPPAGE_TOLERANCE_PERCENT", 1.0))
 MAX_GAS_LIMIT = int(os.getenv("MAX_GAS_LIMIT", 500000))
 try:
-    DEX_ROUTERS_RAW = eval(os.getenv("DEX_ROUTERS", '{}'))
-except Exception:
+    # Use json.loads for safer and more standard parsing of the DEX_ROUTERS string
+    DEX_ROUTERS_RAW = json.loads(os.getenv("DEX_ROUTERS", '{}'))
+except json.JSONDecodeError as e:
+    print(f"CRITICAL: Could not parse DEX_ROUTERS from .env file. Please ensure it is valid JSON. Error: {e}")
     DEX_ROUTERS_RAW = {}
 
 # --- Web3 Setup ---
