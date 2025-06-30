@@ -37,10 +37,14 @@ BASE_CURRENCY_ADDRESS = w3.to_checksum_address(BASE_CURRENCY_ADDRESS_RAW) if BAS
 
 DEX_ROUTERS = {}
 for dex, info in DEX_ROUTERS_RAW.items():
-    DEX_ROUTERS[dex] = {
+    router_data = {
         'address': w3.to_checksum_address(info['address']),
         'version': info['version']
     }
+    # Include the 'type' field if it exists (for Solidly forks, etc.)
+    if 'type' in info:
+        router_data['type'] = info['type']
+    DEX_ROUTERS[dex] = router_data
 
 # --- Account Setup ---
 account = w3.eth.account.from_key(PRIVATE_KEY) if PRIVATE_KEY and PRIVATE_KEY != "0xyour_private_key_here" else None
