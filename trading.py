@@ -4,7 +4,7 @@ from config import (
     w3, account, PRIVATE_KEY, MAX_GAS_LIMIT, DEX_ROUTERS,
     TOKEN_ADDRESS, BASE_CURRENCY_ADDRESS, TRADE_AMOUNT_BASE_TOKEN, SLIPPAGE_TOLERANCE_PERCENT
 )
-from abi import ERC20_ABI, UNISWAP_V2_ROUTER_ABI, UNISWAP_V3_ROUTER_ABI, SOLIDLY_ROUTER_ABI
+from abi import ERC20_ABI, UNISWAP_V2_ROUTER_ABI, UNISWAP_V3_ROUTER_ABI, SOLIDLY_ROUTER_ABI, SOLIDLY_FACTORY_ABI
 from dex_utils import find_router_info
 
 def execute_trade(buy_pool, sell_pool, spread):
@@ -74,8 +74,22 @@ def execute_trade(buy_pool, sell_pool, spread):
         if buy_router_info['version'] == 2:
             buy_router_type = buy_router_info.get('type', 'uniswapv2')
             if buy_router_type == 'solidly':
+                is_stable_pool = False  # Default value
+                pair_address = buy_pool.get('pair_address')
+                factory_address = buy_router_info.get('factory')
+
+                if pair_address and factory_address:
+                    print(f"  - Solidly DEX detected. Querying factory {factory_address} for pool type...")
+                    factory_contract = w3.eth.contract(address=factory_address, abi=SOLIDLY_FACTORY_ABI)
+                    try:
+                        _, _, is_stable_pool = factory_contract.functions.getPairInformation(w3.to_checksum_address(pair_address)).call()
+                        print(f"  - Pool {pair_address} is_stable: {is_stable_pool}")
+                    except Exception as e:
+                        print(f"  - WARNING: Could not query factory for pool type: {e}. Defaulting to stable=False.")
+                else:
+                    print("  - WARNING: 'pair_address' or 'factory' config not found for Solidly pool. Defaulting to stable=False.")
+                
                 buy_router_contract = w3.eth.contract(address=buy_router_info['address'], abi=SOLIDLY_ROUTER_ABI)
-                is_stable_pool = buy_pool.get('stable', False)
                 routes_buy = [(BASE_CURRENCY_ADDRESS, TOKEN_ADDRESS, is_stable_pool)]
                 print(f"  - Solidly Route: {routes_buy}")
                 amounts_out = buy_router_contract.functions.getAmountsOut(amount_in_wei, routes_buy).call()
@@ -176,8 +190,22 @@ def execute_trade(buy_pool, sell_pool, spread):
         if sell_router_info['version'] == 2:
             sell_router_type = sell_router_info.get('type', 'uniswapv2')
             if sell_router_type == 'solidly':
+                is_stable_pool = False # Default value
+                pair_address = sell_pool.get('pair_address')
+                factory_address = sell_router_info.get('factory')
+
+                if pair_address and factory_address:
+                    print(f"  - Solidly DEX detected. Querying factory {factory_address} for pool type...")
+                    factory_contract = w3.eth.contract(address=factory_address, abi=SOLIDLY_FACTORY_ABI)
+                    try:
+                        _, _, is_stable_pool = factory_contract.functions.getPairInformation(w3.to_checksum_address(pair_address)).call()
+                        print(f"  - Pool {pair_address} is_stable: {is_stable_pool}")
+                    except Exception as e:
+                        print(f"  - WARNING: Could not query factory for pool type: {e}. Defaulting to stable=False.")
+                else:
+                    print("  - WARNING: 'pair_address' or 'factory' config not found for Solidly pool. Defaulting to stable=False.")
+
                 sell_router_contract = w3.eth.contract(address=sell_router_info['address'], abi=SOLIDLY_ROUTER_ABI)
-                is_stable_pool = sell_pool.get('stable', False)
                 routes_sell = [(TOKEN_ADDRESS, BASE_CURRENCY_ADDRESS, is_stable_pool)]
                 print(f"  - Solidly Route: {routes_sell}")
                 amounts_out_sell = sell_router_contract.functions.getAmountsOut(amount_received_wei, routes_sell).call()
