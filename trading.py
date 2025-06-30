@@ -3,7 +3,7 @@ from config import (
     w3, account, PRIVATE_KEY, MAX_GAS_LIMIT, DEX_ROUTERS,
     TOKEN_ADDRESS, BASE_CURRENCY_ADDRESS, TRADE_AMOUNT_BASE_TOKEN, SLIPPAGE_TOLERANCE_PERCENT
 )
-from abi import ERC20_ABI, UNISWAP_V2_ROUTER_ABI, UNISWAP_V3_ROUTER_ABI
+from abi import ERC20_ABI, UNISWAP_V2_ROUTER_ABI, UNISWAP_V3_ROUTER_ABI, SOLIDLY_ROUTER_ABI
 from dex_utils import find_router_info
 
 def execute_trade(buy_pool, sell_pool, spread):
@@ -71,16 +71,30 @@ def execute_trade(buy_pool, sell_pool, spread):
 
         # --- V2 BUY LOGIC ---
         if buy_router_info['version'] == 2:
-            buy_router_contract = w3.eth.contract(address=buy_router_info['address'], abi=UNISWAP_V2_ROUTER_ABI)
-            path_buy = [BASE_CURRENCY_ADDRESS, TOKEN_ADDRESS]
-            print(f"  - V2 Path: {path_buy}")
-            amounts_out = buy_router_contract.functions.getAmountsOut(amount_in_wei, path_buy).call()
-            print(f"  - V2 getAmountsOut result: {amounts_out}")
-            amount_out_min_wei = int(amounts_out[1] * (1 - SLIPPAGE_TOLERANCE_PERCENT / 100.0))
-            print(f"  - V2 Min Amount Out (wei): {amount_out_min_wei}")
-            swap_function = buy_router_contract.functions.swapExactTokensForTokens(
-                amount_in_wei, amount_out_min_wei, path_buy, account.address, int(time.time()) + 300
-            )
+            buy_router_type = buy_router_info.get('type', 'uniswapv2')
+            if buy_router_type == 'solidly':
+                buy_router_contract = w3.eth.contract(address=buy_router_info['address'], abi=SOLIDLY_ROUTER_ABI)
+                is_stable_pool = buy_pool.get('stable', False)
+                routes_buy = [(BASE_CURRENCY_ADDRESS, TOKEN_ADDRESS, is_stable_pool)]
+                print(f"  - Solidly Route: {routes_buy}")
+                amounts_out = buy_router_contract.functions.getAmountsOut(amount_in_wei, routes_buy).call()
+                print(f"  - Solidly getAmountsOut result: {amounts_out}")
+                amount_out_min_wei = int(amounts_out[-1] * (1 - SLIPPAGE_TOLERANCE_PERCENT / 100.0))
+                print(f"  - Solidly Min Amount Out (wei): {amount_out_min_wei}")
+                swap_function = buy_router_contract.functions.swapExactTokensForTokens(
+                    amount_in_wei, amount_out_min_wei, routes_buy, account.address, int(time.time()) + 300
+                )
+            else: # Default to uniswapv2
+                buy_router_contract = w3.eth.contract(address=buy_router_info['address'], abi=UNISWAP_V2_ROUTER_ABI)
+                path_buy = [BASE_CURRENCY_ADDRESS, TOKEN_ADDRESS]
+                print(f"  - V2 Path: {path_buy}")
+                amounts_out = buy_router_contract.functions.getAmountsOut(amount_in_wei, path_buy).call()
+                print(f"  - V2 getAmountsOut result: {amounts_out}")
+                amount_out_min_wei = int(amounts_out[-1] * (1 - SLIPPAGE_TOLERANCE_PERCENT / 100.0))
+                print(f"  - V2 Min Amount Out (wei): {amount_out_min_wei}")
+                swap_function = buy_router_contract.functions.swapExactTokensForTokens(
+                    amount_in_wei, amount_out_min_wei, path_buy, account.address, int(time.time()) + 300
+                )
         # --- V3 BUY LOGIC ---
         elif buy_router_info['version'] == 3:
             buy_router_contract = w3.eth.contract(address=buy_router_info['address'], abi=UNISWAP_V3_ROUTER_ABI)
@@ -159,16 +173,30 @@ def execute_trade(buy_pool, sell_pool, spread):
         
         # --- V2 SELL LOGIC ---
         if sell_router_info['version'] == 2:
-            sell_router_contract = w3.eth.contract(address=sell_router_info['address'], abi=UNISWAP_V2_ROUTER_ABI)
-            path_sell = [TOKEN_ADDRESS, BASE_CURRENCY_ADDRESS]
-            print(f"  - V2 Path: {path_sell}")
-            amounts_out_sell = sell_router_contract.functions.getAmountsOut(amount_received_wei, path_sell).call()
-            print(f"  - V2 getAmountsOut result: {amounts_out_sell}")
-            final_amount_out_min_wei = int(amounts_out_sell[1] * (1 - SLIPPAGE_TOLERANCE_PERCENT / 100.0))
-            print(f"  - V2 Min Amount Out (wei): {final_amount_out_min_wei}")
-            sell_swap_function = sell_router_contract.functions.swapExactTokensForTokens(
-                amount_received_wei, final_amount_out_min_wei, path_sell, account.address, int(time.time()) + 300
-            )
+            sell_router_type = sell_router_info.get('type', 'uniswapv2')
+            if sell_router_type == 'solidly':
+                sell_router_contract = w3.eth.contract(address=sell_router_info['address'], abi=SOLIDLY_ROUTER_ABI)
+                is_stable_pool = sell_pool.get('stable', False)
+                routes_sell = [(TOKEN_ADDRESS, BASE_CURRENCY_ADDRESS, is_stable_pool)]
+                print(f"  - Solidly Route: {routes_sell}")
+                amounts_out_sell = sell_router_contract.functions.getAmountsOut(amount_received_wei, routes_sell).call()
+                print(f"  - Solidly getAmountsOut result: {amounts_out_sell}")
+                final_amount_out_min_wei = int(amounts_out_sell[-1] * (1 - SLIPPAGE_TOLERANCE_PERCENT / 100.0))
+                print(f"  - Solidly Min Amount Out (wei): {final_amount_out_min_wei}")
+                sell_swap_function = sell_router_contract.functions.swapExactTokensForTokens(
+                    amount_received_wei, final_amount_out_min_wei, routes_sell, account.address, int(time.time()) + 300
+                )
+            else: # Default to uniswapv2
+                sell_router_contract = w3.eth.contract(address=sell_router_info['address'], abi=UNISWAP_V2_ROUTER_ABI)
+                path_sell = [TOKEN_ADDRESS, BASE_CURRENCY_ADDRESS]
+                print(f"  - V2 Path: {path_sell}")
+                amounts_out_sell = sell_router_contract.functions.getAmountsOut(amount_received_wei, path_sell).call()
+                print(f"  - V2 getAmountsOut result: {amounts_out_sell}")
+                final_amount_out_min_wei = int(amounts_out_sell[-1] * (1 - SLIPPAGE_TOLERANCE_PERCENT / 100.0))
+                print(f"  - V2 Min Amount Out (wei): {final_amount_out_min_wei}")
+                sell_swap_function = sell_router_contract.functions.swapExactTokensForTokens(
+                    amount_received_wei, final_amount_out_min_wei, path_sell, account.address, int(time.time()) + 300
+                )
         # --- V3 SELL LOGIC ---
         elif sell_router_info['version'] == 3:
             sell_router_contract = w3.eth.contract(address=sell_router_info['address'], abi=UNISWAP_V3_ROUTER_ABI)
