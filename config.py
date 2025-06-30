@@ -39,7 +39,8 @@ except json.JSONDecodeError as e:
     DEX_ROUTERS_RAW = {}
 
 # --- Web3 Setup ---
-w3 = Web3(Web3.HTTPProvider(BASE_RPC_URL))
+# Use WebsocketProvider for a more stable and faster connection
+w3 = Web3(Web3.WebsocketProvider(BASE_RPC_URL))
 
 # --- Address Checksumming ---
 TOKEN_ADDRESS = w3.to_checksum_address(TOKEN_ADDRESS_RAW) if TOKEN_ADDRESS_RAW else None
