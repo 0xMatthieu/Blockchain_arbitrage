@@ -42,13 +42,46 @@ def check_and_approve_token(token_address, spender_address, amount_to_approve_we
         print(f"Allowance is {allowance}. Need {amount_to_approve_wei}. Approving...")
         
         try:
+            # --- Two-step approval for safety ---
+            # If allowance is not 0, some tokens require resetting it to 0 before setting a new value.
+            if allowance > 0:
+                print("  - Current allowance is non-zero. Resetting to 0 first to avoid 'unsafe allowance' errors...")
+                
+                max_priority_fee_reset = w3.eth.max_priority_fee
+                base_fee_reset = w3.eth.get_block('latest')['baseFeePerGas']
+                max_fee_per_gas_reset = base_fee_reset * 2 + max_priority_fee_reset
+
+                reset_payload = {
+                    'from': account.address,
+                    'nonce': w3.eth.get_transaction_count(account.address),
+                    'maxFeePerGas': max_fee_per_gas_reset,
+                    'maxPriorityFeePerGas': max_priority_fee_reset,
+                    'chainId': w3.eth.chain_id
+                }
+                reset_gas_estimate = token_contract.functions.approve(spender_address, 0).estimate_gas(reset_payload)
+                reset_payload['gas'] = min(int(reset_gas_estimate * 1.2), MAX_GAS_LIMIT)
+                
+                reset_txn = token_contract.functions.approve(spender_address, 0).build_transaction(reset_payload)
+                signed_reset_txn = w3.eth.account.sign_transaction(reset_txn, PRIVATE_KEY)
+                reset_tx_hash = w3.eth.send_raw_transaction(signed_reset_txn.raw_transaction)
+                
+                print(f"  - Sent reset approval (to 0). Hash: {reset_tx_hash.hex()}. Waiting for confirmation...")
+                w3.eth.wait_for_transaction_receipt(reset_tx_hash)
+                print("  - Allowance reset to 0 successfully.")
+                time.sleep(2) # Give the node a moment to sync state
+
+            # --- Approve the new amount ---
+            print(f"  - Now approving the new amount: {amount_to_approve_wei}")
             max_priority_fee = w3.eth.max_priority_fee
             base_fee = w3.eth.get_block('latest')['baseFeePerGas']
             max_fee_per_gas = base_fee * 2 + max_priority_fee
 
+            # Get the new nonce after the potential reset transaction
+            current_nonce = w3.eth.get_transaction_count(account.address)
+
             approve_payload = {
                 'from': account.address,
-                'nonce': w3.eth.get_transaction_count(account.address),
+                'nonce': current_nonce,
                 'maxFeePerGas': max_fee_per_gas,
                 'maxPriorityFeePerGas': max_priority_fee,
                 'chainId': w3.eth.chain_id
