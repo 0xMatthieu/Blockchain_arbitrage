@@ -135,9 +135,24 @@ def execute_trade(buy_pool, sell_pool, spread):
                 buy_router_contract = w3.eth.contract(address=buy_router_info['address'], abi=SOLIDLY_ROUTER_ABI)
                 routes_buy = [(BASE_CURRENCY_ADDRESS, TOKEN_ADDRESS, is_stable_pool)]
                 print(f"  - Solidly Route: {routes_buy}")
-                amounts_out = resilient_rpc_call(lambda: buy_router_contract.functions.getAmountsOut(amount_in_wei, routes_buy).call({'from': account.address}))
-                print(f"  - Solidly getAmountsOut result: {amounts_out}")
-                amount_out_min_wei = int(amounts_out[-1] * (1 - SLIPPAGE_TOLERANCE_PERCENT / 100.0))
+                
+                amount_out_min_wei = 0
+                try:
+                    # Preferred method: get amount from router
+                    print("  - Attempting to get amount out from router...")
+                    amounts_out = resilient_rpc_call(lambda: buy_router_contract.functions.getAmountsOut(amount_in_wei, routes_buy).call({'from': account.address}))
+                    print(f"  - Solidly getAmountsOut result: {amounts_out}")
+                    amount_out_min_wei = int(amounts_out[-1] * (1 - SLIPPAGE_TOLERANCE_PERCENT / 100.0))
+                except Exception as e:
+                    print(f"  - WARNING: getAmountsOut failed: {e}. Falling back to manual calculation from API price.")
+                
+                if amount_out_min_wei == 0:
+                    # Fallback method: calculate from DexScreener price
+                    expected_amount_out_float = TRADE_AMOUNT_BASE_TOKEN / buy_pool['price']
+                    min_amount_out_float = expected_amount_out_float * (1 - SLIPPAGE_TOLERANCE_PERCENT / 100.0)
+                    amount_out_min_wei = int(min_amount_out_float * (10**target_decimals))
+                    print("  - Calculated min amount out using API price.")
+
                 print(f"  - Solidly Min Amount Out (wei): {amount_out_min_wei}")
                 swap_function = buy_router_contract.functions.swapExactTokensForTokens(
                     amount_in_wei, amount_out_min_wei, routes_buy, account.address, int(time.time()) + 300
@@ -305,9 +320,25 @@ def execute_trade(buy_pool, sell_pool, spread):
                 sell_router_contract = w3.eth.contract(address=sell_router_info['address'], abi=SOLIDLY_ROUTER_ABI)
                 routes_sell = [(TOKEN_ADDRESS, BASE_CURRENCY_ADDRESS, is_stable_pool)]
                 print(f"  - Solidly Route: {routes_sell}")
-                amounts_out_sell = resilient_rpc_call(lambda: sell_router_contract.functions.getAmountsOut(amount_received_wei, routes_sell).call({'from': account.address}))
-                print(f"  - Solidly getAmountsOut result: {amounts_out_sell}")
-                final_amount_out_min_wei = int(amounts_out_sell[-1] * (1 - SLIPPAGE_TOLERANCE_PERCENT / 100.0))
+
+                final_amount_out_min_wei = 0
+                try:
+                    # Preferred method: get amount from router
+                    print("  - Attempting to get amount out from router...")
+                    amounts_out_sell = resilient_rpc_call(lambda: sell_router_contract.functions.getAmountsOut(amount_received_wei, routes_sell).call({'from': account.address}))
+                    print(f"  - Solidly getAmountsOut result: {amounts_out_sell}")
+                    final_amount_out_min_wei = int(amounts_out_sell[-1] * (1 - SLIPPAGE_TOLERANCE_PERCENT / 100.0))
+                except Exception as e:
+                    print(f"  - WARNING: getAmountsOut failed: {e}. Falling back to manual calculation from API price.")
+
+                if final_amount_out_min_wei == 0:
+                    # Fallback method: calculate from DexScreener price
+                    amount_received_float = amount_received_wei / (10**target_decimals)
+                    expected_sell_return_float = amount_received_float * sell_pool['price']
+                    min_sell_return_float = expected_sell_return_float * (1 - SLIPPAGE_TOLERANCE_PERCENT / 100.0)
+                    final_amount_out_min_wei = int(min_sell_return_float * (10**base_decimals))
+                    print("  - Calculated min amount out using API price.")
+
                 print(f"  - Solidly Min Amount Out (wei): {final_amount_out_min_wei}")
                 sell_swap_function = sell_router_contract.functions.swapExactTokensForTokens(
                     amount_received_wei, final_amount_out_min_wei, routes_sell, account.address, int(time.time()) + 300
