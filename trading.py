@@ -165,18 +165,26 @@ def execute_trade(buy_pool, sell_pool, spread):
         print("  - Buy transaction successful! Parsing receipt...")
         amount_received_wei = 0
         
-        # Use web3.py's event processing to find the Transfer event to our address.
-        # This is more robust than manually parsing logs.
+        # Manually parse logs to find the Transfer event to our address.
+        # This is more robust than process_receipt for complex swaps (e.g., V3).
         try:
-            transfer_events = target_token_contract.events.Transfer().process_receipt(buy_receipt, errors=DISCARD)
-            for event in transfer_events:
-                if event.args.to == account.address:
-                    amount_received_wei = event.args.value
-                    print(f"  - Found transfer of {amount_received_wei / (10**target_decimals):.4f} tokens to wallet.")
-                    break # Stop after finding the first relevant transfer
+            # The signature hash of the Transfer event
+            TRANSFER_EVENT_TOPIC = w3.keccak(text="Transfer(address,address,uint256)")
+            
+            for log in buy_receipt.logs:
+                # Check if the log is a Transfer event for the correct token and has 3 topics
+                if len(log.topics) == 3 and log.topics[0] == TRANSFER_EVENT_TOPIC and log.address == TOKEN_ADDRESS:
+                    # The recipient address is the 3rd topic (index 2)
+                    # It's a 32-byte value, we need the last 20 bytes for the address
+                    recipient_address = w3.to_checksum_address('0x' + log.topics[2].hex()[-40:])
+                    
+                    if recipient_address == account.address:
+                        # The value is in the data field, decode it as a uint256
+                        amount_received_wei = w3.codec.decode(['uint256'], log.data)[0]
+                        print(f"  - Found transfer of {amount_received_wei / (10**target_decimals):.4f} tokens to wallet.")
+                        break # Stop after finding the transfer to us
         except Exception as e:
-            # This might happen with non-standard contracts or ABI mismatches.
-            print(f"  - Error parsing transaction receipt for Transfer events: {e}")
+            print(f"  - Error manually parsing transaction receipt for Transfer events: {e}")
 
         if amount_received_wei == 0:
             print("  - CRITICAL: Could not determine received token amount from receipt. Aborting sell.")
