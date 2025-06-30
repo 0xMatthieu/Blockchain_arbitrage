@@ -132,7 +132,7 @@ def execute_trade(buy_pool, sell_pool, spread):
                 buy_router_contract = w3.eth.contract(address=buy_router_info['address'], abi=SOLIDLY_ROUTER_ABI)
                 routes_buy = [(BASE_CURRENCY_ADDRESS, TOKEN_ADDRESS, is_stable_pool)]
                 print(f"  - Solidly Route: {routes_buy}")
-                amounts_out = resilient_rpc_call(lambda: buy_router_contract.functions.getAmountsOut(amount_in_wei, routes_buy).call())
+                amounts_out = resilient_rpc_call(lambda: buy_router_contract.functions.getAmountsOut(amount_in_wei, routes_buy).call({'from': account.address}))
                 print(f"  - Solidly getAmountsOut result: {amounts_out}")
                 amount_out_min_wei = int(amounts_out[-1] * (1 - SLIPPAGE_TOLERANCE_PERCENT / 100.0))
                 print(f"  - Solidly Min Amount Out (wei): {amount_out_min_wei}")
@@ -268,7 +268,7 @@ def execute_trade(buy_pool, sell_pool, spread):
                 sell_router_contract = w3.eth.contract(address=sell_router_info['address'], abi=SOLIDLY_ROUTER_ABI)
                 routes_sell = [(TOKEN_ADDRESS, BASE_CURRENCY_ADDRESS, is_stable_pool)]
                 print(f"  - Solidly Route: {routes_sell}")
-                amounts_out_sell = resilient_rpc_call(lambda: sell_router_contract.functions.getAmountsOut(amount_received_wei, routes_sell).call())
+                amounts_out_sell = resilient_rpc_call(lambda: sell_router_contract.functions.getAmountsOut(amount_received_wei, routes_sell).call({'from': account.address}))
                 print(f"  - Solidly getAmountsOut result: {amounts_out_sell}")
                 final_amount_out_min_wei = int(amounts_out_sell[-1] * (1 - SLIPPAGE_TOLERANCE_PERCENT / 100.0))
                 print(f"  - Solidly Min Amount Out (wei): {final_amount_out_min_wei}")
