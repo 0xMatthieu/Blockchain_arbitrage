@@ -81,20 +81,29 @@ def execute_trade(buy_pool, sell_pool, spread):
                     print(f"  - Solidly DEX detected. Determining pool type from factory {factory_address}...")
                     factory_contract = w3.eth.contract(address=factory_address, abi=SOLIDLY_FACTORY_ABI)
                     zero_address = "0x0000000000000000000000000000000000000000"
+                    
+                    volatile_pair_address = zero_address
+                    stable_pair_address = zero_address
+
+                    # Make separate, resilient calls to check for each pool type
                     try:
                         volatile_pair_address = factory_contract.functions.getPair(BASE_CURRENCY_ADDRESS, TOKEN_ADDRESS, False).call()
-                        stable_pair_address = factory_contract.functions.getPair(BASE_CURRENCY_ADDRESS, TOKEN_ADDRESS, True).call()
-
-                        if volatile_pair_address != zero_address:
-                            is_stable_pool = False
-                            print(f"  - Found volatile pool at address: {volatile_pair_address}")
-                        elif stable_pair_address != zero_address:
-                            is_stable_pool = True
-                            print(f"  - Found stable pool at address: {stable_pair_address}")
-                        else:
-                            print("  - WARNING: Could not find a valid pool for this token pair in the factory. Defaulting to stable=False.")
                     except Exception as e:
-                        print(f"  - WARNING: Could not query factory to determine pool type: {e}. Defaulting to stable=False.")
+                        print(f"  - INFO: Could not query for volatile pair. Error: {e}")
+                    
+                    try:
+                        stable_pair_address = factory_contract.functions.getPair(BASE_CURRENCY_ADDRESS, TOKEN_ADDRESS, True).call()
+                    except Exception as e:
+                        print(f"  - INFO: Could not query for stable pair. Error: {e}")
+
+                    if volatile_pair_address != zero_address:
+                        is_stable_pool = False
+                        print(f"  - Found volatile pool at address: {volatile_pair_address}")
+                    elif stable_pair_address != zero_address:
+                        is_stable_pool = True
+                        print(f"  - Found stable pool at address: {stable_pair_address}")
+                    else:
+                        print("  - WARNING: Could not find a valid pool for this token pair in the factory. Defaulting to stable=False.")
                 else:
                     print("  - WARNING: 'factory' address not found in config for Solidly DEX. Defaulting to stable=False.")
                 
@@ -214,20 +223,29 @@ def execute_trade(buy_pool, sell_pool, spread):
                     print(f"  - Solidly DEX detected. Determining pool type from factory {factory_address}...")
                     factory_contract = w3.eth.contract(address=factory_address, abi=SOLIDLY_FACTORY_ABI)
                     zero_address = "0x0000000000000000000000000000000000000000"
+                    
+                    volatile_pair_address = zero_address
+                    stable_pair_address = zero_address
+
+                    # Make separate, resilient calls to check for each pool type
                     try:
                         volatile_pair_address = factory_contract.functions.getPair(TOKEN_ADDRESS, BASE_CURRENCY_ADDRESS, False).call()
-                        stable_pair_address = factory_contract.functions.getPair(TOKEN_ADDRESS, BASE_CURRENCY_ADDRESS, True).call()
-
-                        if volatile_pair_address != zero_address:
-                            is_stable_pool = False
-                            print(f"  - Found volatile pool at address: {volatile_pair_address}")
-                        elif stable_pair_address != zero_address:
-                            is_stable_pool = True
-                            print(f"  - Found stable pool at address: {stable_pair_address}")
-                        else:
-                            print("  - WARNING: Could not find a valid pool for this token pair in the factory. Defaulting to stable=False.")
                     except Exception as e:
-                        print(f"  - WARNING: Could not query factory to determine pool type: {e}. Defaulting to stable=False.")
+                        print(f"  - INFO: Could not query for volatile pair. Error: {e}")
+                    
+                    try:
+                        stable_pair_address = factory_contract.functions.getPair(TOKEN_ADDRESS, BASE_CURRENCY_ADDRESS, True).call()
+                    except Exception as e:
+                        print(f"  - INFO: Could not query for stable pair. Error: {e}")
+
+                    if volatile_pair_address != zero_address:
+                        is_stable_pool = False
+                        print(f"  - Found volatile pool at address: {volatile_pair_address}")
+                    elif stable_pair_address != zero_address:
+                        is_stable_pool = True
+                        print(f"  - Found stable pool at address: {stable_pair_address}")
+                    else:
+                        print("  - WARNING: Could not find a valid pool for this token pair in the factory. Defaulting to stable=False.")
                 else:
                     print("  - WARNING: 'factory' address not found in config for Solidly DEX. Defaulting to stable=False.")
 
