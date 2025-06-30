@@ -1,4 +1,4 @@
-# Minimal ABI for ERC20 tokens to check balance, allowance and approve
+# Minimal ABI for ERC20 tokens to check balance, allowance, approve and parse Transfer events
 ERC20_ABI = [
     {
         "constant": True,
@@ -27,6 +27,16 @@ ERC20_ABI = [
         "name": "balanceOf",
         "outputs": [{"name": "balance", "type": "uint256"}],
         "type": "function"
+    },
+    {
+        "anonymous": False,
+        "inputs": [
+            {"indexed": True, "name": "from", "type": "address"},
+            {"indexed": True, "name": "to", "type": "address"},
+            {"indexed": False, "name": "value", "type": "uint256"}
+        ],
+        "name": "Transfer",
+        "type": "event"
     }
 ]
 

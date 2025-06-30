@@ -135,13 +135,22 @@ def execute_trade(buy_pool, sell_pool, spread):
         # --- Parse receipt for actual amount received ---
         print("  - Buy transaction successful! Parsing receipt...")
         amount_received_wei = 0
-        TRANSFER_EVENT_SIG = w3.keccak(text="Transfer(address,address,uint256)").hex()
-        for log in buy_receipt.logs:
-            if str(log.address) == TOKEN_ADDRESS and str(log.topics[0].hex()) == TRANSFER_EVENT_SIG and w3.to_checksum_address("0x" + log.topics[2].hex()[-40:]) == account.address:
-                amount_received_wei = int(log.data.hex(), 16)
-                break
+        
+        # Use web3.py's event processing to find the Transfer event to our address.
+        # This is more robust than manually parsing logs.
+        try:
+            transfer_events = target_token_contract.events.Transfer().process_receipt(buy_receipt, errors=w3.DISCARD)
+            for event in transfer_events:
+                if event.args.to == account.address:
+                    amount_received_wei = event.args.value
+                    print(f"  - Found transfer of {amount_received_wei / (10**target_decimals):.4f} tokens to wallet.")
+                    break # Stop after finding the first relevant transfer
+        except Exception as e:
+            # This might happen with non-standard contracts or ABI mismatches.
+            print(f"  - Error parsing transaction receipt for Transfer events: {e}")
+
         if amount_received_wei == 0:
-            print("  - CRITICAL: Could not determine received token amount. Aborting sell.")
+            print("  - CRITICAL: Could not determine received token amount from receipt. Aborting sell.")
             return
         
         # --- 2. SELL TRANSACTION ---
