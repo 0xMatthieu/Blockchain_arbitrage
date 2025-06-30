@@ -1,4 +1,4 @@
-# Minimal ABI for ERC20 tokens to check allowance and approve
+# Minimal ABI for ERC20 tokens to check balance, allowance and approve
 ERC20_ABI = [
     {
         "constant": True,
@@ -19,6 +19,13 @@ ERC20_ABI = [
         "inputs": [],
         "name": "decimals",
         "outputs": [{"name": "", "type": "uint8"}],
+        "type": "function"
+    },
+    {
+        "constant": True,
+        "inputs": [{"name": "_owner", "type": "address"}],
+        "name": "balanceOf",
+        "outputs": [{"name": "balance", "type": "uint256"}],
         "type": "function"
     }
 ]
