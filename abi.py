@@ -101,7 +101,11 @@ UNISWAP_V3_ROUTER_ABI = [
         "outputs": [{"internalType": "uint256", "name": "amountOut", "type": "uint256"}],
         "stateMutability": "payable",
         "type": "function"
-    },
+    }
+]
+
+# Minimal ABI for a Uniswap V3-style QuoterV2
+UNISWAP_V3_QUOTER_ABI = [
     {
         "inputs": [
             {"internalType": "address", "name": "tokenIn", "type": "address"},
@@ -117,7 +121,7 @@ UNISWAP_V3_ROUTER_ABI = [
     }
 ]
 
-# Minimal ABI for a Uniswap V3 pool to parse Swap events
+# Minimal ABI for a Uniswap V3 pool to parse Swap events and check slot0
 UNISWAP_V3_POOL_ABI = [
     {
         "anonymous": False,
@@ -132,6 +136,21 @@ UNISWAP_V3_POOL_ABI = [
         ],
         "name": "Swap",
         "type": "event"
+    },
+    {
+        "inputs": [],
+        "name": "slot0",
+        "outputs": [
+            {"internalType": "uint160", "name": "sqrtPriceX96", "type": "uint160"},
+            {"internalType": "int24", "name": "tick", "type": "int24"},
+            {"internalType": "uint16", "name": "observationIndex", "type": "uint16"},
+            {"internalType": "uint16", "name": "observationCardinality", "type": "uint16"},
+            {"internalType": "uint16", "name": "observationCardinalityNext", "type": "uint16"},
+            {"internalType": "uint8", "name": "feeProtocol", "type": "uint8"},
+            {"internalType": "bool", "name": "unlocked", "type": "bool"}
+        ],
+        "stateMutability": "view",
+        "type": "function"
     }
 ]
 

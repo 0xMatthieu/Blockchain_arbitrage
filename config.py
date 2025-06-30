@@ -53,12 +53,13 @@ for dex, info in DEX_ROUTERS_RAW.items():
         'address': w3.to_checksum_address(info['address']),
         'version': info['version']
     }
-    # Include the 'type' field if it exists (for Solidly forks, etc.)
+    # Include optional fields if they exist
     if 'type' in info:
         router_data['type'] = info['type']
-    # Include the 'factory' address if it exists
     if 'factory' in info:
         router_data['factory'] = w3.to_checksum_address(info['factory'])
+    if 'quoter' in info:
+        router_data['quoter'] = w3.to_checksum_address(info['quoter'])
     DEX_ROUTERS[dex] = router_data
 
 # --- Account Setup ---
