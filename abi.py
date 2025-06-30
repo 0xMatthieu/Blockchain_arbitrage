@@ -135,6 +135,21 @@ UNISWAP_V3_POOL_ABI = [
     }
 ]
 
+# Minimal ABI for a Uniswap V3 factory to find pools
+UNISWAP_V3_FACTORY_ABI = [
+    {
+        "inputs": [
+            {"internalType": "address", "name": "tokenA", "type": "address"},
+            {"internalType": "address", "name": "tokenB", "type": "address"},
+            {"internalType": "uint24", "name": "fee", "type": "uint24"}
+        ],
+        "name": "getPool",
+        "outputs": [{"internalType": "address", "name": "pool", "type": "address"}],
+        "stateMutability": "view",
+        "type": "function"
+    }
+]
+
 
 # Minimal ABI for a Solidly-style router (e.g., Aerodrome)
 SOLIDLY_ROUTER_ABI = [

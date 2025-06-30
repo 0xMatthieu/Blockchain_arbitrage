@@ -8,7 +8,7 @@ from config import (
 )
 from abi import (
     ERC20_ABI, UNISWAP_V2_ROUTER_ABI, UNISWAP_V3_ROUTER_ABI, SOLIDLY_ROUTER_ABI, 
-    SOLIDLY_FACTORY_ABI, UNISWAP_V3_POOL_ABI
+    SOLIDLY_FACTORY_ABI, UNISWAP_V3_POOL_ABI, UNISWAP_V3_FACTORY_ABI
 )
 from dex_utils import find_router_info
 
@@ -171,16 +171,49 @@ def execute_trade(buy_pool, sell_pool, spread):
         # --- V3 BUY LOGIC ---
         elif buy_router_info['version'] == 3:
             buy_router_contract = w3.eth.contract(address=buy_router_info['address'], abi=UNISWAP_V3_ROUTER_ABI)
-            fee = int(buy_pool['feeBps'] * 100)
-            print(f"  - V3 Fee: {fee}")
             
-            expected_amount_out_float = TRADE_AMOUNT_BASE_TOKEN / buy_pool['price']
-            min_amount_out_float = expected_amount_out_float * (1 - SLIPPAGE_TOLERANCE_PERCENT / 100.0)
-            amount_out_min_wei = int(min_amount_out_float * (10**target_decimals))
-            print(f"  - V3 Min Amount Out (wei): {amount_out_min_wei}")
+            factory_address = buy_router_info.get('factory')
+            if not factory_address:
+                raise ValueError(f"V3 DEX '{buy_dex_name}' requires a 'factory' address in the config.")
 
+            print(f"  - V3 DEX detected. Querying factory {factory_address} for a valid pool...")
+            factory_contract = w3.eth.contract(address=factory_address, abi=UNISWAP_V3_FACTORY_ABI)
+            
+            # Common V3 fee tiers in basis points (bps * 100)
+            FEE_TIERS = [100, 500, 2500, 3000, 10000]
+            chosen_fee = None
+            
+            for fee in FEE_TIERS:
+                pool_address = resilient_rpc_call(lambda: factory_contract.functions.getPool(
+                    BASE_CURRENCY_ADDRESS, TOKEN_ADDRESS, fee
+                ).call())
+                if pool_address != "0x0000000000000000000000000000000000000000":
+                    chosen_fee = fee
+                    print(f"  - Found valid pool with fee tier {fee} bps at address {pool_address}")
+                    break
+            
+            if chosen_fee is None:
+                raise ValueError(f"Could not find a valid V3 pool for the pair on {buy_dex_name}.")
+
+            print(f"  - Selected V3 Fee: {chosen_fee}")
+            
+            # Simulate the swap to get a precise quote for amountOut
+            temp_swap_params = {
+                'tokenIn': BASE_CURRENCY_ADDRESS, 'tokenOut': TOKEN_ADDRESS, 'fee': chosen_fee,
+                'recipient': account.address, 'deadline': int(time.time()) + 300,
+                'amountIn': amount_in_wei, 'amountOutMinimum': 0,
+                'sqrtPriceLimitX96': 0
+            }
+
+            print("  - Simulating V3 swap to get exact amount out...")
+            quoted_amount_out_wei = resilient_rpc_call(lambda: buy_router_contract.functions.exactInputSingle(temp_swap_params).call({'from': account.address}))
+            
+            amount_out_min_wei = int(quoted_amount_out_wei * (1 - SLIPPAGE_TOLERANCE_PERCENT / 100.0))
+            print(f"  - V3 Min Amount Out (from quote): {amount_out_min_wei}")
+
+            # Final params for the actual transaction
             swap_params = {
-                'tokenIn': BASE_CURRENCY_ADDRESS, 'tokenOut': TOKEN_ADDRESS, 'fee': fee,
+                'tokenIn': BASE_CURRENCY_ADDRESS, 'tokenOut': TOKEN_ADDRESS, 'fee': chosen_fee,
                 'recipient': account.address, 'deadline': int(time.time()) + 300,
                 'amountIn': amount_in_wei, 'amountOutMinimum': amount_out_min_wei,
                 'sqrtPriceLimitX96': 0
@@ -357,14 +390,48 @@ def execute_trade(buy_pool, sell_pool, spread):
         # --- V3 SELL LOGIC ---
         elif sell_router_info['version'] == 3:
             sell_router_contract = w3.eth.contract(address=sell_router_info['address'], abi=UNISWAP_V3_ROUTER_ABI)
-            fee = int(sell_pool['feeBps'] * 100)
-            print(f"  - V3 Fee: {fee}")
-            expected_sell_return_float = (amount_received_wei / (10**target_decimals)) * sell_pool['price']
-            min_sell_return_float = expected_sell_return_float * (1 - SLIPPAGE_TOLERANCE_PERCENT / 100.0)
-            final_amount_out_min_wei = int(min_sell_return_float * (10**base_decimals))
-            print(f"  - V3 Min Amount Out (wei): {final_amount_out_min_wei}")
+
+            factory_address = sell_router_info.get('factory')
+            if not factory_address:
+                raise ValueError(f"V3 DEX '{sell_dex_name}' requires a 'factory' address in the config.")
+            
+            print(f"  - V3 DEX detected. Querying factory {factory_address} for a valid pool...")
+            factory_contract = w3.eth.contract(address=factory_address, abi=UNISWAP_V3_FACTORY_ABI)
+            
+            FEE_TIERS = [100, 500, 2500, 3000, 10000]
+            chosen_fee = None
+
+            for fee in FEE_TIERS:
+                pool_address = resilient_rpc_call(lambda: factory_contract.functions.getPool(
+                    TOKEN_ADDRESS, BASE_CURRENCY_ADDRESS, fee
+                ).call())
+                if pool_address != "0x0000000000000000000000000000000000000000":
+                    chosen_fee = fee
+                    print(f"  - Found valid pool with fee tier {fee} bps at address {pool_address}")
+                    break
+            
+            if chosen_fee is None:
+                raise ValueError(f"Could not find a valid V3 pool for the pair on {sell_dex_name}.")
+
+            print(f"  - Selected V3 Fee: {chosen_fee}")
+
+            # Simulate the swap to get a precise quote
+            temp_sell_params = {
+                'tokenIn': TOKEN_ADDRESS, 'tokenOut': BASE_CURRENCY_ADDRESS, 'fee': chosen_fee,
+                'recipient': account.address, 'deadline': int(time.time()) + 300,
+                'amountIn': amount_received_wei, 'amountOutMinimum': 0,
+                'sqrtPriceLimitX96': 0
+            }
+            
+            print("  - Simulating V3 swap to get exact amount out...")
+            quoted_final_amount_out_wei = resilient_rpc_call(lambda: sell_router_contract.functions.exactInputSingle(temp_sell_params).call({'from': account.address}))
+            
+            final_amount_out_min_wei = int(quoted_final_amount_out_wei * (1 - SLIPPAGE_TOLERANCE_PERCENT / 100.0))
+            print(f"  - V3 Min Amount Out (from quote): {final_amount_out_min_wei}")
+
+            # Final params for the actual transaction
             sell_swap_params = {
-                'tokenIn': TOKEN_ADDRESS, 'tokenOut': BASE_CURRENCY_ADDRESS, 'fee': fee,
+                'tokenIn': TOKEN_ADDRESS, 'tokenOut': BASE_CURRENCY_ADDRESS, 'fee': chosen_fee,
                 'recipient': account.address, 'deadline': int(time.time()) + 300,
                 'amountIn': amount_received_wei, 'amountOutMinimum': final_amount_out_min_wei,
                 'sqrtPriceLimitX96': 0
