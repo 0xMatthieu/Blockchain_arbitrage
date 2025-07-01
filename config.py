@@ -39,9 +39,22 @@ except json.JSONDecodeError as e:
     DEX_ROUTERS_RAW = {}
 
 # --- Web3 Setup ---
-# Use WebsocketProvider for a more stable and faster connection.
-# In web3.py v6+, the synchronous provider is LegacyWebSocketProvider.
-w3 = Web3(Web3.LegacyWebSocketProvider(BASE_RPC_URL))
+# Determine the correct Web3 provider based on the BASE_RPC_URL scheme.
+if not BASE_RPC_URL:
+    raise ValueError(
+        "BASE_RPC_URL is not set. Please provide a websocket or http(s) RPC URL in your .env file."
+    )
+
+if BASE_RPC_URL.startswith(("ws://", "wss://")):
+    # Use WebsocketProvider for websocket endpoints
+    w3 = Web3(Web3.LegacyWebSocketProvider(BASE_RPC_URL))
+elif BASE_RPC_URL.startswith(("http://", "https://")):
+    # Use HTTPProvider when provided with an http(s) endpoint
+    w3 = Web3(Web3.HTTPProvider(BASE_RPC_URL))
+else:
+    raise ValueError(
+        "Invalid BASE_RPC_URL. Must start with ws://, wss://, http:// or https://"
+    )
 
 # --- Address Checksumming ---
 TOKEN_ADDRESS = w3.to_checksum_address(TOKEN_ADDRESS_RAW) if TOKEN_ADDRESS_RAW else None
