@@ -4,7 +4,7 @@ from web3.exceptions import ContractLogicError
 from config import (
     w3, account, PRIVATE_KEY, MAX_GAS_LIMIT, DEX_ROUTERS,
     TOKEN_ADDRESS, BASE_CURRENCY_ADDRESS, TRADE_AMOUNT_BASE_TOKEN, SLIPPAGE_TOLERANCE_PERCENT,
-    RPC_MAX_RETRIES, RPC_BACKOFF_FACTOR
+    RPC_MAX_RETRIES, RPC_BACKOFF_FACTOR, BOT_WALLET
 )
 from abi import (
     ERC20_ABI, UNISWAP_V2_ROUTER_ABI, UNISWAP_V3_ROUTER_ABI, SOLIDLY_ROUTER_ABI, 
@@ -396,12 +396,26 @@ def execute_trade(buy_pool, sell_pool, spread):
             
             print(f"  - Using Quoter at {quoter_address} to get quote...")
             quoter_contract = w3.eth.contract(address=quoter_address, abi=UNISWAP_V3_QUOTER_ABI)
-            
-            quoted_final_amount_out_wei = resilient_rpc_call(lambda: quoter_contract.functions.quoteExactInputSingle(
-                TOKEN_ADDRESS, BASE_CURRENCY_ADDRESS, chosen_fee, amount_received_wei, 0
-            ).call())
+
+            # Pack the five scalars into ONE tuple
+            params = (
+                TOKEN_ADDRESS,  # tokenIn   (KTA)
+                BASE_CURRENCY_ADDRESS,  # tokenOut  (WETH)
+                chosen_fee,  # 3000 = 0.3 %
+                amount_received_wei,  # the KTA you just bought
+                0  # no sqrt-price limit
+            )
+
+            # Call the function.  Quoter V2 reverts internally, so give it gas.
+            amount_out, _priceAfter, _ticks, _gas = resilient_rpc_call(
+                lambda: quoter_contract.functions.quoteExactInputSingle(params).call(
+                    {"from": BOT_WALLET, "gas": 500_000})
+            )
+
+            quoted_final_amount_out_wei = int(amount_out)
 
             final_amount_out_min_wei = int(quoted_final_amount_out_wei * (1 - SLIPPAGE_TOLERANCE_PERCENT / 100.0))
+
             print(f"  - V3 Min Amount Out (from quote): {final_amount_out_min_wei}")
 
             # Prepare final swap transaction for the router
