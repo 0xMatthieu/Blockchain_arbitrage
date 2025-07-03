@@ -13,25 +13,51 @@ from abi import (
 )
 from dex_utils import find_router_info
 
+from eth_abi import decode        # already inside web3’s deps
+from hexbytes import HexBytes
+from web3.exceptions import ContractLogicError
+
 def resilient_rpc_call(callable_func):
     """
-    Tries to execute a callable that makes an RPC call, with exponential backoff.
-    A 'callable' is a function that takes no arguments, e.g., lambda: my_func(arg1, arg2)
+    Execute `callable_func` (usually a web3 call) with exponential back-off.
+
+    * If it succeeds → return result immediately.
+    * If it reverts **with** payload (Quoter V2 style) → decode & return the
+      first uint256 (amountOut).
+    * Any other error → retry up to RPC_MAX_RETRIES, doubling the delay.
     """
+    # expect the Quoter V2 output layout once decoded
+    _QUOTER_V2_RET_TYPES = ["uint256", "uint160", "uint32", "uint256"]
+
     for i in range(RPC_MAX_RETRIES):
         try:
             return callable_func()
-        except Exception as e:
-            # If it's a contract logic error (revert), don't retry, it will fail again.
-            if "execution reverted" in str(e) or isinstance(e, ContractLogicError):
-                print(f"  - Contract logic error (revert): {e}")
-                raise e
-            
-            wait_time = RPC_BACKOFF_FACTOR * (2 ** i)
-            print(f"\n  - RPC call failed with error: {e}. Retrying in {wait_time:.2f}s... ({i+1}/{RPC_MAX_RETRIES})")
-            time.sleep(wait_time)
-    raise Exception(f"RPC call failed after {RPC_MAX_RETRIES} retries.")
 
+        except ContractLogicError as err:
+            # ↪ web3-py puts the tx receipt dict as err.args[0]
+            payload = None
+            if err.args and isinstance(err.args[0], dict):
+                payload = err.args[0].get("data", b"")
+
+            # payload comes back as HexBytes; length > 4 → has real data
+            if payload and len(payload) > 4:
+                # strip first 4B selector if present
+                data_bytes = HexBytes(payload)[4:] if len(payload) % 32 else HexBytes(payload)
+                # decode up to the 4 items Quoter V2 returns
+                decoded = decode(_QUOTER_V2_RET_TYPES, data_bytes.ljust(32 * 4, b"\0"))
+                return decoded[0]                     # amountOut (uint256)
+
+            # truly empty revert → raise without retry
+            print(f"  - Contract logic error (revert, no data): {err}")
+            raise err
+
+        except Exception as err:
+            wait = RPC_BACKOFF_FACTOR * (2 ** i)
+            print(f"\n  - RPC call failed: {err}. Retrying in {wait:.2f}s "
+                  f"({i + 1}/{RPC_MAX_RETRIES})")
+            time.sleep(wait)
+
+    raise Exception(f"RPC call failed after {RPC_MAX_RETRIES} retries.")
 
 def _get_v3_pool_abi(dex_name):
     """Selects the correct V3 pool ABI based on the DEX name."""
@@ -96,79 +122,67 @@ def _prepare_uniswap_v2_swap(router_info, amount_in_wei, path):
     )
     return swap_function, amount_out_min_wei
 
-
 def _prepare_uniswap_v3_swap(dex_name, router_info, amount_in_wei, token_in, token_out):
     """Prepares a swap transaction for a Uniswap V3-style DEX."""
-    factory_address = router_info.get('factory')
+    factory_address = router_info.get("factory")
     if not factory_address:
         raise ValueError(f"V3 DEX '{dex_name}' requires a 'factory' address in config.")
 
     print(f"  - V3 DEX detected. Querying factory {factory_address} for a valid pool...")
     factory_contract = w3.eth.contract(address=factory_address, abi=UNISWAP_V3_FACTORY_ABI)
-    
+
     FEE_TIERS = [100, 500, 2500, 3000, 10000]
     chosen_fee, pool_address = None, None
-    
     for fee in FEE_TIERS:
-        pool_addr_candidate = resilient_rpc_call(lambda: factory_contract.functions.getPool(
-            token_in, token_out, fee
-        ).call())
-        if pool_addr_candidate != "0x0000000000000000000000000000000000000000":
+        pool_addr_candidate = resilient_rpc_call(
+            lambda: factory_contract.functions.getPool(token_in, token_out, fee).call()
+        )
+        if int(pool_addr_candidate, 16):
             chosen_fee, pool_address = fee, pool_addr_candidate
             print(f"  - Found valid pool with fee tier {fee} bps at address {pool_address}")
             break
-    
-    if chosen_fee is None or pool_address is None:
-        raise ValueError(f"Could not find a valid V3 pool for the pair on {dex_name}.")
+    if chosen_fee is None:
+        raise ValueError(f"No V3 pool found for pair on {dex_name}")
 
+    # ---------- pool-init check ----------
     v3_pool_abi = _get_v3_pool_abi(dex_name)
-    pool_contract = w3.eth.contract(address=pool_address, abi=v3_pool_abi)
-    try:
-        print(f"  - Checking if pool {pool_address} is initialized...")
-        slot0 = resilient_rpc_call(lambda: pool_contract.functions.slot0().call())
-        if slot0[0] == 0:
-            raise ValueError("Pool is not initialized (zero liquidity).")
-        print("  - Pool is initialized.")
-    except Exception as e:
-        raise ValueError(f"Pool check failed for {pool_address}: {e}")
+    pool_contract = w3.eth.contract(pool_address, abi=v3_pool_abi)
+    sqrt_price_x96, *_ = resilient_rpc_call(lambda: pool_contract.functions.slot0().call())
+    if sqrt_price_x96 == 0:
+        raise ValueError("Pool exists but has zero liquidity")
 
-    quoter_address = router_info.get('quoter')
+    # ---------- quote via Quoter V2 ----------
+    quoter_address = router_info.get("quoter")
     if not quoter_address:
         raise ValueError(f"V3 DEX '{dex_name}' requires a 'quoter' address in config.")
+    print(f"  - Using Quoter at {quoter_address} to get quote…")
 
-    print(f"  - Using Quoter at {quoter_address} to get quote...")
-    quoter_contract = w3.eth.contract(address=quoter_address, abi=UNISWAP_V3_QUOTER_ABI)
-    
-    # Logic for quoteExactInputSingle is slightly different for QuoterV2 and Pancake's
-    try:
-        # Standard QuoterV2 call (returns single value)
-        quoted_amount_out_wei = resilient_rpc_call(lambda: quoter_contract.functions.quoteExactInputSingle(
-            token_in, token_out, chosen_fee, amount_in_wei, 0
-        ).call())
-    except Exception:
-        # Fallback for Pancake-style quoter (returns a struct/tuple)
-        params = (token_in, token_out, chosen_fee, amount_in_wei, 0)
-        # Call with gas since it can revert internally
-        quote_result = resilient_rpc_call(
-            lambda: quoter_contract.functions.quoteExactInputSingle(params).call(
-                {"from": BOT_WALLET, "gas": 500_000})
+    quoter_contract = w3.eth.contract(quoter_address, abi=UNISWAP_V3_QUOTER_ABI)
+    params_tuple = (token_in, token_out, chosen_fee, amount_in_wei, 0)
+    quote_tuple = resilient_rpc_call(
+        lambda: quoter_contract.functions.quoteExactInputSingle(params_tuple).call(
+            {"from": account.address, "gas": 500_000}
         )
-        quoted_amount_out_wei = quote_result[0]
-
+    )
+    quoted_amount_out_wei = int(quote_tuple[0])
     amount_out_min_wei = int(quoted_amount_out_wei * (1 - SLIPPAGE_TOLERANCE_PERCENT / 100.0))
     print(f"  - V3 Min Amount Out (from quote): {amount_out_min_wei}")
 
-    router_contract = w3.eth.contract(address=router_info['address'], abi=UNISWAP_V3_ROUTER_ABI)
+    # ---------- build swap ----------
+    router_contract = w3.eth.contract(router_info["address"], abi=UNISWAP_V3_ROUTER_ABI)
     swap_params = {
-        'tokenIn': token_in, 'tokenOut': token_out, 'fee': chosen_fee,
-        'recipient': account.address, 'deadline': int(time.time()) + 300,
-        'amountIn': amount_in_wei, 'amountOutMinimum': amount_out_min_wei,
-        'sqrtPriceLimitX96': 0
+        "tokenIn": token_in,
+        "tokenOut": token_out,
+        "fee": chosen_fee,
+        "recipient": account.address,
+        "deadline": int(time.time()) + 300,
+        "amountIn": amount_in_wei,
+        "amountOutMinimum": amount_out_min_wei,
+        "sqrtPriceLimitX96": 0,
     }
     print(f"  - V3 Swap Params: {swap_params}")
     swap_function = router_contract.functions.exactInputSingle(swap_params)
     return swap_function, amount_out_min_wei
-
 
 def _parse_receipt_for_amount_out(receipt, router_info, dex_name, target_token_address, target_decimals):
     """Parses a transaction receipt to find the amount of tokens received."""
