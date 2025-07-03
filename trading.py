@@ -31,16 +31,16 @@ def resilient_rpc_call(callable_func):
 
     for i in range(RPC_MAX_RETRIES):
         try:
-            print(f"  - [RPC] Attempting call ({i+1}/{RPC_MAX_RETRIES})...")
             result = callable_func()
-            print("  - [RPC] Call successful.")
             return result
 
         except ContractLogicError as err:
             # ↪ web3-py puts the tx receipt dict as err.args[0]
             payload = None
+            print(f"  - [RPC] ContractLogicError {err}")
             if err.args and isinstance(err.args[0], dict):
                 payload = err.args[0].get("data", b"")
+                print(f"  - [RPC] payload: {payload}")
 
             # payload comes back as HexBytes; length > 4 → has real data
             if payload and len(payload) > 4:
