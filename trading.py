@@ -137,7 +137,7 @@ def _prepare_uniswap_v3_swap(dex_name, router_info, amount_in_wei, token_in, tok
     print(f"  - V3 DEX detected. Querying factory {factory_address} for a valid pool...")
     factory_contract = w3.eth.contract(address=factory_address, abi=UNISWAP_V3_FACTORY_ABI)
 
-    FEE_TIERS = [100, 500, 2500, 3000, 10000]
+    FEE_TIERS = [500, 3000, 10000, 2500, 100]
     chosen_fee, pool_address = None, None
     for fee in FEE_TIERS:
         pool_addr_candidate = resilient_rpc_call(
@@ -150,12 +150,19 @@ def _prepare_uniswap_v3_swap(dex_name, router_info, amount_in_wei, token_in, tok
     if chosen_fee is None:
         raise ValueError(f"No V3 pool found for pair on {dex_name}")
 
-    # ---------- pool-init check ----------
+    # ---------- pool-init + liquidity check ----------
     v3_pool_abi = _get_v3_pool_abi(dex_name)
     pool_contract = w3.eth.contract(pool_address, abi=v3_pool_abi)
+
     sqrt_price_x96, *_ = resilient_rpc_call(lambda: pool_contract.functions.slot0().call())
     if sqrt_price_x96 == 0:
-        raise ValueError("Pool exists but has zero liquidity")
+        raise ValueError("Pool exists but has zero sqrtPrice (never initialised)")
+
+    current_liquidity = resilient_rpc_call(lambda: pool_contract.functions.liquidity().call())
+    if current_liquidity == 0:
+        raise ValueError("Pool initialised but has 0 active liquidity")
+
+    print(f"  - Pool is initialised and has {current_liquidity} units of liquidity")
 
     # ---------- quote via Quoter V2 ----------
     quoter_address = router_info.get("quoter")

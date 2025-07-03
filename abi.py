@@ -107,17 +107,26 @@ UNISWAP_V3_ROUTER_ABI = [
 # Minimal ABI for a Uniswap V3-style QuoterV2
 UNISWAP_V3_QUOTER_ABI = [
     {
-        "inputs": [
-            {"internalType": "address", "name": "tokenIn", "type": "address"},
-            {"internalType": "address", "name": "tokenOut", "type": "address"},
-            {"internalType": "uint24", "name": "fee", "type": "uint24"},
-            {"internalType": "uint256", "name": "amountIn", "type": "uint256"},
-            {"internalType": "uint160", "name": "sqrtPriceLimitX96", "type": "uint160"}
-        ],
         "name": "quoteExactInputSingle",
-        "outputs": [{"internalType": "uint256", "name": "amountOut", "type": "uint256"}],
+        "type": "function",
         "stateMutability": "nonpayable",
-        "type": "function"
+        "inputs": [{
+            "name": "params",
+            "type": "tuple",
+            "components": [
+                {"name": "tokenIn",          "type": "address"},
+                {"name": "tokenOut",         "type": "address"},
+                {"name": "fee",              "type": "uint24"},
+                {"name": "amountIn",         "type": "uint256"},
+                {"name": "sqrtPriceLimitX96","type": "uint160"}
+            ]
+        }],
+        "outputs": [
+            {"name": "amountOut",          "type": "uint256"},
+            {"name": "sqrtPriceX96After",  "type": "uint160"},
+            {"name": "ticksCrossed",       "type": "uint32"},
+            {"name": "gasEstimate",        "type": "uint256"}
+        ]
     }
 ]
 
@@ -151,6 +160,15 @@ UNISWAP_V3_POOL_ABI = [
         ],
         "stateMutability": "view",
         "type": "function"
+    },
+    {
+        "name": "liquidity",
+        "type": "function",
+        "stateMutability": "view",
+        "inputs": [],
+        "outputs": [
+            {"name": "", "type": "uint128"}
+        ]
     }
 ]
 
@@ -250,5 +268,23 @@ SOLIDLY_PAIR_ABI = [
         "payable": False,
         "stateMutability": "view",
         "type": "function"
+    }
+]
+
+PANCAKE_V3_POOL_ABI = [
+    {
+        "name": "slot0",
+        "stateMutability": "view",
+        "type": "function",
+        "inputs": [],
+        "outputs": [
+            {"name": "sqrtPriceX96",            "type": "uint160"},
+            {"name": "tick",                    "type": "int24"},
+            {"name": "observationIndex",        "type": "uint16"},
+            {"name": "observationCardinality",  "type": "uint16"},
+            {"name": "observationCardinalityNext","type": "uint16"},
+            {"name": "feeProtocol",             "type": "uint32"},   # 32-bit!
+            {"name": "unlocked",                "type": "bool"}
+        ]
     }
 ]

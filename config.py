@@ -14,9 +14,18 @@ API_CALLS_PER_MINUTE = 280
 POLL_INTERVAL = 60.0 / API_CALLS_PER_MINUTE
 TRADE_COOLDOWN_SECONDS = 60
 
+V2_FEE_BPS = 20          # Aerodrome, BaseSwap, etc. (0.20 %)
+V3_FEE_MAP = {100: 1,    # Uniswap 0.01 %
+              500: 5,    # 0.05 %
+              2500: 25,  # Pancake 0.25 %
+              3000: 30,  # Uniswap 0.30 %
+              10000: 100 # 1 %
+             }
+
 # --- Blockchain Configuration ---
 BASE_RPC_URL = os.getenv("BASE_RPC_URL")
 PRIVATE_KEY = os.getenv("PRIVATE_KEY")
+BOT_WALLET = os.getenv("BOT_WALLET")
 # Retry mechanism for RPC calls
 RPC_MAX_RETRIES = int(os.getenv("RPC_MAX_RETRIES", 5))
 RPC_BACKOFF_FACTOR = float(os.getenv("RPC_BACKOFF_FACTOR", 0.5))

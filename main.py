@@ -4,7 +4,7 @@ import time
 from config import (
     w3, account, TOKEN_ADDRESS, BASE_CURRENCY_ADDRESS, DEX_ROUTERS,
     MIN_LIQUIDITY_USD, MIN_SPREAD_PERCENT, POLL_INTERVAL, TRADE_COOLDOWN_SECONDS,
-    TRADE_AMOUNT_BASE_TOKEN
+    TRADE_AMOUNT_BASE_TOKEN, V2_FEE_BPS, V3_FEE_MAP
 )
 from abi import ERC20_ABI
 from dex_utils import check_and_approve_token
@@ -13,27 +13,51 @@ from trading import execute_trade
 # --- Global State ---
 last_trade_attempt_ts = 0
 
+def _router_fee_bps(pool):
+    """Return total fee bps for price quoted by DexScreener item."""
+    if pool['dex'] in ('uniswap', 'pancakeswap'):
+        return V3_FEE_MAP.get(pool['feeBps'], 30)   # default 0.30 %
+    else:                                           # solidly-style v2
+        return V2_FEE_BPS
+
 def analyze_and_trade(pairs):
     global last_trade_attempt_ts
 
     if time.time() - last_trade_attempt_ts < TRADE_COOLDOWN_SECONDS:
         return
 
-    liquid_pools = [p for p in pairs if p.get('liq_usd') >= MIN_LIQUIDITY_USD]
+    # keep only liquid pools
+    liquid_pools = [p for p in pairs if p['liq_usd'] >= MIN_LIQUIDITY_USD]
     if len(liquid_pools) < 2:
         print("\rNot enough liquid pools to analyze. Waiting...", end="")
         return
 
+    # sort by quoted token price
     liquid_pools.sort(key=lambda x: x['price'])
-    buy_pool = liquid_pools[0]
+    buy_pool  = liquid_pools[0]
     sell_pool = liquid_pools[-1]
-    spread = ((sell_pool['price'] - buy_pool['price']) / buy_pool['price']) * 100
 
-    print(f"\rBest Buy: ${buy_pool['price']:.6f} ({buy_pool['dex']}) | Best Sell: ${sell_pool['price']:.6f} ({sell_pool['dex']}) | Spread: {spread:.2f}%   ", end="")
+    # ---- fee-adjusted spread ------------------------------------
+    buy_fee  = _router_fee_bps(buy_pool)   / 10_000
+    sell_fee = _router_fee_bps(sell_pool)  / 10_000
+
+    effective_buy  = buy_pool['price']  * (1 + buy_fee)   # we pay
+    effective_sell = sell_pool['price'] * (1 - sell_fee)  # we receive
+    spread = (effective_sell - effective_buy) / effective_buy * 100
+    # -------------------------------------------------------------
+
+    # ---- pretty banner (route line) -----------------------------
+    banner = (
+        f"Route:  {buy_pool['dex'].upper()} (buy, fee {buy_fee*100:.2f} %) "
+        "➜  "
+        f"{sell_pool['dex'].upper()} (sell, fee {sell_fee*100:.2f} %) | "
+        f"Adj. spread: {spread:.2f} %   "
+    )
+    print("\r" + banner, end="", flush=True)
+    # -------------------------------------------------------------
 
     if spread >= MIN_SPREAD_PERCENT:
         execute_trade(buy_pool, sell_pool, spread)
-        # Update cooldown timestamp after a trade is attempted
         last_trade_attempt_ts = time.time()
 
 def main():
