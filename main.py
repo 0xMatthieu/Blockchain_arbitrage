@@ -12,6 +12,7 @@ from trading import execute_trade
 
 # --- Global State ---
 last_trade_attempt_ts = 0
+LAST_BANNERS_LOG = {}
 
 def _router_fee_bps(pool):
     """Return total fee bps for price quoted by DexScreener item."""
@@ -21,7 +22,7 @@ def _router_fee_bps(pool):
         return V2_FEE_BPS
 
 def analyze_and_trade(pairs, token_address):
-    global last_trade_attempt_ts
+    global last_trade_attempt_ts, LAST_BANNERS_LOG
 
     if time.time() - last_trade_attempt_ts < TRADE_COOLDOWN_SECONDS:
         return
@@ -29,6 +30,8 @@ def analyze_and_trade(pairs, token_address):
     # keep only liquid pools
     liquid_pools = [p for p in pairs if p['liq_usd'] >= MIN_LIQUIDITY_USD]
     if len(liquid_pools) < 2:
+        pair_symbol = pairs[0]['pair'] if pairs else "Unknown"
+        LAST_BANNERS_LOG[token_address] = f"{pair_symbol:<20} | Not enough liquid pools to analyze. Waiting..."
         return
 
     # sort by quoted token price
@@ -53,7 +56,7 @@ def analyze_and_trade(pairs, token_address):
         f"{sell_pool['dex'].upper()} (sell, fee {sell_fee*100:.2f}%) | "
         f"Spread: {spread:6.2f}%"
     )
-    print(banner)
+    LAST_BANNERS_LOG[token_address] = banner
     # -------------------------------------------------------------
 
     if spread >= MIN_SPREAD_PERCENT:
@@ -91,6 +94,11 @@ def main():
     print(f"Polling API every {POLL_INTERVAL:.2f} seconds for each token.")
     print("-" * 50)
 
+    # Initialize banner log and reserve space on screen
+    for token_address in TOKEN_ADDRESSES:
+        LAST_BANNERS_LOG[token_address] = f"[{token_address[-6:]}] Waiting for initial data..."
+        print("")
+
     while True:
         for token_address in TOKEN_ADDRESSES:
             try:
@@ -98,37 +106,50 @@ def main():
                 response = requests.get(api_url)
                 response.raise_for_status()
                 j = response.json()
+                
                 if not j or not j.get('pairs'):
-                    continue
+                    LAST_BANNERS_LOG[token_address] = f"[{token_address[-6:]}] No pairs found in API response."
+                    current_pairs = []
+                else:
+                    current_pairs = []
+                    for p in j['pairs']:
+                        if (p.get('priceNative') and p.get('quoteToken') and p.get('quoteToken').get('address') and
+                            w3.to_checksum_address(p['quoteToken']['address']) == BASE_CURRENCY_ADDRESS and
+                            p.get('liquidity') and p.get('liquidity').get('usd')):
+                            
+                            price_native = float(p['priceNative'])
+                            price_usd = float(p['priceUsd'])
+                            base_currency_price_usd = 0
+                            if price_native > 1e-18:
+                                base_currency_price_usd = price_usd / price_native
 
-                current_pairs = []
-                for p in j['pairs']:
-                    if (p.get('priceNative') and p.get('quoteToken') and p.get('quoteToken').get('address') and
-                        w3.to_checksum_address(p['quoteToken']['address']) == BASE_CURRENCY_ADDRESS and
-                        p.get('liquidity') and p.get('liquidity').get('usd')):
-                        
-                        price_native = float(p['priceNative'])
-                        price_usd = float(p['priceUsd'])
-                        base_currency_price_usd = 0
-                        if price_native > 1e-18:
-                            base_currency_price_usd = price_usd / price_native
-
-                        current_pairs.append({
-                            'dex': p['dexId'], 'chain' : p['chainId'],
-                            'pair': f"{p['baseToken']['symbol']}/{p['quoteToken']['symbol']}",
-                            'price': price_native, 'liq_usd': float(p['liquidity']['usd']),
-                            'pairAddress': p['pairAddress'], 'feeBps': p.get('feeBps', 0),
-                            'base_currency_price_usd': base_currency_price_usd
-                        })
+                            current_pairs.append({
+                                'dex': p['dexId'], 'chain' : p['chainId'],
+                                'pair': f"{p['baseToken']['symbol']}/{p['quoteToken']['symbol']}",
+                                'price': price_native, 'liq_usd': float(p['liquidity']['usd']),
+                                'pairAddress': p['pairAddress'], 'feeBps': p.get('feeBps', 0),
+                                'base_currency_price_usd': base_currency_price_usd
+                            })
                 
                 if current_pairs:
                     analyze_and_trade(current_pairs, token_address)
+                elif j and j.get('pairs'):
+                    # case where pairs exist but none are valid (e.g. not against base currency or no liquidity)
+                    pair_symbol = f"{j['pairs'][0]['baseToken']['symbol']}/{j['pairs'][0]['quoteToken']['symbol']}"
+                    LAST_BANNERS_LOG[token_address] = f"{pair_symbol:<20} | No valid/liquid pools found."
 
             except requests.exceptions.RequestException as e:
-                print(f"\nAn error occurred while fetching data for {token_address}: {e}")
+                LAST_BANNERS_LOG[token_address] = f"[{token_address[-6:]}] API Error: {str(e)[:80]}"
             except Exception as e:
-                print(f"\nAn unexpected error occurred while processing {token_address}: {e}")
+                LAST_BANNERS_LOG[token_address] = f"[{token_address[-6:]}] App Error: {str(e)[:80]}"
             
+            # --- Display Banners ---
+            # Move cursor up to rewrite all banners
+            print(f"\033[{len(TOKEN_ADDRESSES)}A", end="")
+            for t_addr in TOKEN_ADDRESSES:
+                # \r to return to start of line, \033[K to clear rest of line
+                print(f"\r{LAST_BANNERS_LOG.get(t_addr, '...')}\033[K")
+
             time.sleep(POLL_INTERVAL)
 
 if __name__ == "__main__":
