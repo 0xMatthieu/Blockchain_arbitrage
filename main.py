@@ -29,7 +29,6 @@ def analyze_and_trade(pairs, token_address):
     # keep only liquid pools
     liquid_pools = [p for p in pairs if p['liq_usd'] >= MIN_LIQUIDITY_USD]
     if len(liquid_pools) < 2:
-        print("\rNot enough liquid pools to analyze. Waiting...", end="")
         return
 
     # sort by quoted token price
@@ -48,12 +47,13 @@ def analyze_and_trade(pairs, token_address):
 
     # ---- pretty banner (route line) -----------------------------
     banner = (
-        f"Route:  {buy_pool['dex'].upper()} (buy, fee {buy_fee*100:.2f} %) "
-        "➜  "
-        f"{sell_pool['dex'].upper()} (sell, fee {sell_fee*100:.2f} %) | "
-        f"Adj. spread: {spread:.2f} %   "
+        f"{buy_pool['pair']:<20} | "
+        f"Route: {buy_pool['dex'].upper()} (buy, fee {buy_fee*100:.2f}%) "
+        "-> "
+        f"{sell_pool['dex'].upper()} (sell, fee {sell_fee*100:.2f}%) | "
+        f"Spread: {spread:6.2f}%"
     )
-    print("\r" + banner, end="", flush=True)
+    print(banner)
     # -------------------------------------------------------------
 
     if spread >= MIN_SPREAD_PERCENT:
@@ -99,7 +99,6 @@ def main():
                 response.raise_for_status()
                 j = response.json()
                 if not j or not j.get('pairs'):
-                    print(f"\rNo pairs found for {token_address} in API response.", end="")
                     continue
 
                 current_pairs = []
