@@ -31,7 +31,10 @@ def resilient_rpc_call(callable_func):
 
     for i in range(RPC_MAX_RETRIES):
         try:
-            return callable_func()
+            print(f"  - [RPC] Attempting call ({i+1}/{RPC_MAX_RETRIES})...")
+            result = callable_func()
+            print("  - [RPC] Call successful.")
+            return result
 
         except ContractLogicError as err:
             # ↪ web3-py puts the tx receipt dict as err.args[0]
@@ -41,10 +44,12 @@ def resilient_rpc_call(callable_func):
 
             # payload comes back as HexBytes; length > 4 → has real data
             if payload and len(payload) > 4:
+                print("  - [RPC] Call reverted with data. Attempting to decode as Quoter V2 response.")
                 # strip first 4B selector if present
                 data_bytes = HexBytes(payload)[4:] if len(payload) % 32 else HexBytes(payload)
                 # decode up to the 4 items Quoter V2 returns
                 decoded = decode(_QUOTER_V2_RET_TYPES, data_bytes.ljust(32 * 4, b"\0"))
+                print(f"  - [RPC] Decoded amountOut: {decoded[0]}")
                 return decoded[0]                     # amountOut (uint256)
 
             # truly empty revert → raise without retry
@@ -53,10 +58,11 @@ def resilient_rpc_call(callable_func):
 
         except Exception as err:
             wait = RPC_BACKOFF_FACTOR * (2 ** i)
-            print(f"\n  - RPC call failed: {err}. Retrying in {wait:.2f}s "
+            print(f"\n  - [RPC] Call failed with unhandled exception: {err}. Retrying in {wait:.2f}s "
                   f"({i + 1}/{RPC_MAX_RETRIES})")
             time.sleep(wait)
 
+    print(f"  - [RPC] Call failed after {RPC_MAX_RETRIES} retries. Raising exception.")
     raise Exception(f"RPC call failed after {RPC_MAX_RETRIES} retries.")
 
 def _get_v3_pool_abi(dex_name):
