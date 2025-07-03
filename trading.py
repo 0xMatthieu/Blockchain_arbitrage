@@ -3,7 +3,7 @@ from web3.logs import DISCARD
 from web3.exceptions import ContractLogicError
 from config import (
     w3, account, PRIVATE_KEY, MAX_GAS_LIMIT, DEX_ROUTERS,
-    TOKEN_ADDRESS, BASE_CURRENCY_ADDRESS, TRADE_AMOUNT_BASE_TOKEN, SLIPPAGE_TOLERANCE_PERCENT,
+    BASE_CURRENCY_ADDRESS, TRADE_AMOUNT_BASE_TOKEN, SLIPPAGE_TOLERANCE_PERCENT,
     RPC_MAX_RETRIES, RPC_BACKOFF_FACTOR, BOT_WALLET
 )
 from abi import (
@@ -248,7 +248,7 @@ def _parse_receipt_for_amount_out(receipt, router_info, dex_name, target_token_a
     return amount_received_wei
 
 
-def execute_trade(buy_pool, sell_pool, spread):
+def execute_trade(buy_pool, sell_pool, spread, token_address):
     print("\n" + "!"*60)
     print(f"!!! REAL TRADE TRIGGERED - Spread: {spread:.2f}% !!!")
     print("!"*60)
@@ -292,18 +292,18 @@ def execute_trade(buy_pool, sell_pool, spread):
         print(f"  - Liquidity check passed. Trade size ${trade_amount_usd:,.2f} is reasonable for both pools.")
 
         # --- 1. BUY TRANSACTION ---
-        print(f"Step 1: Buying {TOKEN_ADDRESS} on {buy_dex_name} (v{buy_router_info['version']})...")
-        target_token_contract = w3.eth.contract(address=TOKEN_ADDRESS, abi=ERC20_ABI)
+        print(f"Step 1: Buying {token_address} on {buy_dex_name} (v{buy_router_info['version']})...")
+        target_token_contract = w3.eth.contract(address=token_address, abi=ERC20_ABI)
         target_decimals = resilient_rpc_call(lambda: target_token_contract.functions.decimals().call())
 
         if buy_router_info['version'] == 2:
             router_type = buy_router_info.get('type', 'uniswapv2')
             if router_type == 'solidly':
-                swap_function, _ = _prepare_solidly_swap(buy_dex_name, buy_router_info, amount_in_wei, BASE_CURRENCY_ADDRESS, TOKEN_ADDRESS)
+                swap_function, _ = _prepare_solidly_swap(buy_dex_name, buy_router_info, amount_in_wei, BASE_CURRENCY_ADDRESS, token_address)
             else: # Default to uniswapv2
-                swap_function, _ = _prepare_uniswap_v2_swap(buy_router_info, amount_in_wei, [BASE_CURRENCY_ADDRESS, TOKEN_ADDRESS])
+                swap_function, _ = _prepare_uniswap_v2_swap(buy_router_info, amount_in_wei, [BASE_CURRENCY_ADDRESS, token_address])
         elif buy_router_info['version'] == 3:
-            swap_function, _ = _prepare_uniswap_v3_swap(buy_dex_name, buy_router_info, amount_in_wei, BASE_CURRENCY_ADDRESS, TOKEN_ADDRESS)
+            swap_function, _ = _prepare_uniswap_v3_swap(buy_dex_name, buy_router_info, amount_in_wei, BASE_CURRENCY_ADDRESS, token_address)
         else:
             raise NotImplementedError(f"DEX version {buy_router_info['version']} is not supported for buys.")
 
@@ -333,23 +333,23 @@ def execute_trade(buy_pool, sell_pool, spread):
             return
 
         print("  - Buy transaction successful! Parsing receipt...")
-        amount_received_wei = _parse_receipt_for_amount_out(buy_receipt, buy_router_info, buy_dex_name, TOKEN_ADDRESS, target_decimals)
+        amount_received_wei = _parse_receipt_for_amount_out(buy_receipt, buy_router_info, buy_dex_name, token_address, target_decimals)
 
         if amount_received_wei == 0:
             print("  - CRITICAL: Could not determine received token amount from receipt. Aborting sell.")
             return
         
         # --- 2. SELL TRANSACTION ---
-        print(f"Step 2: Selling {amount_received_wei / (10**target_decimals)} of {TOKEN_ADDRESS} on {sell_dex_name} (v{sell_router_info['version']})...")
+        print(f"Step 2: Selling {amount_received_wei / (10**target_decimals)} of {token_address} on {sell_dex_name} (v{sell_router_info['version']})...")
         
         if sell_router_info['version'] == 2:
             router_type = sell_router_info.get('type', 'uniswapv2')
             if router_type == 'solidly':
-                sell_swap_function, _ = _prepare_solidly_swap(sell_dex_name, sell_router_info, amount_received_wei, TOKEN_ADDRESS, BASE_CURRENCY_ADDRESS)
+                sell_swap_function, _ = _prepare_solidly_swap(sell_dex_name, sell_router_info, amount_received_wei, token_address, BASE_CURRENCY_ADDRESS)
             else: # Default to uniswapv2
-                sell_swap_function, _ = _prepare_uniswap_v2_swap(sell_router_info, amount_received_wei, [TOKEN_ADDRESS, BASE_CURRENCY_ADDRESS])
+                sell_swap_function, _ = _prepare_uniswap_v2_swap(sell_router_info, amount_received_wei, [token_address, BASE_CURRENCY_ADDRESS])
         elif sell_router_info['version'] == 3:
-            sell_swap_function, _ = _prepare_uniswap_v3_swap(sell_dex_name, sell_router_info, amount_received_wei, TOKEN_ADDRESS, BASE_CURRENCY_ADDRESS)
+            sell_swap_function, _ = _prepare_uniswap_v3_swap(sell_dex_name, sell_router_info, amount_received_wei, token_address, BASE_CURRENCY_ADDRESS)
         else:
             raise NotImplementedError(f"DEX version {sell_router_info['version']} is not supported for sells.")
 

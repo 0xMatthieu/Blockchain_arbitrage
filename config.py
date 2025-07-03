@@ -7,7 +7,7 @@ from web3 import Web3
 load_dotenv()
 
 # --- API and Bot Configuration ---
-TOKEN_ADDRESS_RAW = os.getenv("TOKEN_ADDRESS")
+TOKEN_ADDRESSES_RAW = os.getenv("TOKEN_ADDRESSES", "")
 MIN_LIQUIDITY_USD = float(os.getenv("MIN_LIQUIDITY_USD", 1000))
 MIN_SPREAD_PERCENT = float(os.getenv("MIN_SPREAD_PERCENT", 1.0))
 API_CALLS_PER_MINUTE = 280
@@ -66,7 +66,7 @@ else:
     )
 
 # --- Address Checksumming ---
-TOKEN_ADDRESS = w3.to_checksum_address(TOKEN_ADDRESS_RAW) if TOKEN_ADDRESS_RAW else None
+TOKEN_ADDRESSES = [w3.to_checksum_address(addr.strip()) for addr in TOKEN_ADDRESSES_RAW.split(',') if addr.strip()] if TOKEN_ADDRESSES_RAW else []
 BASE_CURRENCY_ADDRESS = w3.to_checksum_address(BASE_CURRENCY_ADDRESS_RAW) if BASE_CURRENCY_ADDRESS_RAW else None
 
 DEX_ROUTERS = {}
