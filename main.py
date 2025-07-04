@@ -169,6 +169,8 @@ def main():
             # flush so the terminal executes the codes immediately
             sys.stdout.flush()
 
+            time.sleep(POLL_INTERVAL)
+
 if __name__ == "__main__":
     try:
         main()
