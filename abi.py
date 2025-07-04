@@ -29,6 +29,13 @@ ERC20_ABI = [
         "type": "function"
     },
     {
+        "constant": True,
+        "inputs": [],
+        "name": "totalSupply",
+        "outputs": [{"name": "", "type": "uint256"}],
+        "type": "function"
+    },
+    {
         "anonymous": False,
         "inputs": [
             {"indexed": True, "name": "from", "type": "address"},
