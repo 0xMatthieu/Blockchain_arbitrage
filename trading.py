@@ -218,29 +218,9 @@ def _prepare_solidly_swap(
 
     swap_fn = _build_swap_fn(min_out)
 
-    # ---------- 5️⃣  try a cheap gas-estimation; fall back on failure ----------
-    try:
-        swap_fn.estimate_gas({"from": account.address})
-        final_min_out = min_out
-        print(f"  - MinOut = {min_out}")
-    except ContractLogicError:
-        print("  - ↪ first gas check reverted; falling back to minOut = 0 "
-              "(fee-on-transfer or quote slippage)")
-        # tighten safety: add extra bps off the original quote
-        min_out_safe = int(amounts[-1] * (1 - safety_slippage_bps / 10_000))
-        swap_fn = _build_swap_fn(min_out_safe if min_out_safe > 0 else 0)
-        final_min_out = min_out_safe
-        
-        # Re-check gas estimate with the new zero-min-out swap function.
-        # If this also fails, the pool is truly broken/illiquid.
-        try:
-            swap_fn.estimate_gas({"from": account.address})
-            print("  - Gas estimation with minOut=0 succeeded. Proceeding with caution.")
-        except ContractLogicError as e:
-            print("  - ↪ Gas estimation FAILED even with minOut=0. Pool is unusable.")
-            raise ValueError(f"{dex_name}: Pool is illiquid or broken, swap would fail.") from e
-
-    return swap_fn, final_min_out
+    # Gas estimation checks removed by user request.
+    print(f"  - MinOut = {min_out}")
+    return swap_fn, min_out
 
 def _prepare_uniswap_v2_swap(router_info, amount_in_wei, path, pair_address: str = None):
     """Prepares a swap transaction for a Uniswap V2-style DEX."""
@@ -400,34 +380,8 @@ def _prepare_uniswap_v3_swap(
     print(f"  - Prepare swap")
     swap_fn = _build_v3_swap_fn(amount_out_min)
 
-    # Final check: can we estimate gas for this swap? It's the most reliable
-    # way to see if the router will accept it.
-    try:
-        print(f"  - Estimate gas")
-        resilient_rpc_call(lambda: swap_fn.estimate_gas({"from": account.address}))
-        return swap_fn, amount_out_min
-    except Exception as e:
-        if "revert" in str(e).lower():
-            print(f"  - ↪ V3 gas estimation reverted: {e}. Applying extra slippage buffer and retrying...")
-            # Add a 0.2% additional slippage buffer
-            EXTRA_SLIPPAGE_BUFFER = 0.2
-            safer_amount_out_min = int(amount_out_wei * (1 - (SLIPPAGE_TOLERANCE_PERCENT + EXTRA_SLIPPAGE_BUFFER) / 100.0))
-            
-            if safer_amount_out_min == amount_out_min:
-                 print("  - ↪ Could not apply slippage buffer (trade too small). Aborting.")
-                 raise ValueError("V3 gas estimation failed, slippage buffer could not be applied.") from e
-
-            swap_fn = _build_v3_swap_fn(safer_amount_out_min)
-            try:
-                resilient_rpc_call(lambda: swap_fn.estimate_gas({"from": account.address}))
-                print(f"  - Gas estimation with buffer successful. New minOut: {safer_amount_out_min}")
-                return swap_fn, safer_amount_out_min
-            except Exception as e2:
-                print("  - ↪ V3 gas estimation FAILED even with buffer. Swap would likely fail.")
-                raise ValueError("V3 swap would fail, even with slippage buffer.") from e2
-        else:
-            # Re-raise other exceptions (e.g., RPC node down)
-            raise e
+    # Gas estimation checks removed by user request.
+    return swap_fn, amount_out_min
 
 def _parse_receipt_for_amount_out(receipt, router_info, dex_name, target_token_address, target_decimals):
     """Parses a transaction receipt to find the amount of tokens received."""
@@ -558,8 +512,8 @@ def execute_trade(buy_pool, sell_pool, spread, token_address):
             'maxFeePerGas': max_fee_per_gas, 'maxPriorityFeePerGas': max_priority_fee,
             'chainId': chain_id
         }
-        gas_estimate = resilient_rpc_call(lambda: swap_function.estimate_gas(buy_payload))
-        buy_payload['gas'] = min(int(gas_estimate * 1.2), MAX_GAS_LIMIT)
+        # Gas estimation removed by user request. Using MAX_GAS_LIMIT.
+        buy_payload['gas'] = MAX_GAS_LIMIT
         buy_txn = swap_function.build_transaction(buy_payload)
 
         if not buy_txn:
@@ -608,8 +562,8 @@ def execute_trade(buy_pool, sell_pool, spread, token_address):
             'maxFeePerGas': max_fee_per_gas, 'maxPriorityFeePerGas': max_priority_fee,
             'chainId': chain_id
         }
-        gas_estimate_sell = resilient_rpc_call(lambda: sell_swap_function.estimate_gas(sell_payload))
-        sell_payload['gas'] = min(int(gas_estimate_sell * 1.2), MAX_GAS_LIMIT)
+        # Gas estimation removed by user request. Using MAX_GAS_LIMIT.
+        sell_payload['gas'] = MAX_GAS_LIMIT
         sell_txn = sell_swap_function.build_transaction(sell_payload)
 
         if not sell_txn:

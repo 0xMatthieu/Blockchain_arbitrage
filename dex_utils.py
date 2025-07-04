@@ -58,8 +58,8 @@ def check_and_approve_token(token_address, spender_address, amount_to_approve_we
                     'maxPriorityFeePerGas': max_priority_fee_reset,
                     'chainId': w3.eth.chain_id
                 }
-                reset_gas_estimate = token_contract.functions.approve(spender_address, 0).estimate_gas(reset_payload)
-                reset_payload['gas'] = min(int(reset_gas_estimate * 1.2), MAX_GAS_LIMIT)
+                # Gas estimation removed by user request. Using MAX_GAS_LIMIT.
+                reset_payload['gas'] = MAX_GAS_LIMIT
                 
                 reset_txn = token_contract.functions.approve(spender_address, 0).build_transaction(reset_payload)
                 signed_reset_txn = w3.eth.account.sign_transaction(reset_txn, PRIVATE_KEY)
@@ -86,12 +86,8 @@ def check_and_approve_token(token_address, spender_address, amount_to_approve_we
                 'maxPriorityFeePerGas': max_priority_fee,
                 'chainId': w3.eth.chain_id
             }
-            gas_estimate = token_contract.functions.approve(
-                spender_address, amount_to_approve_wei
-            ).estimate_gas(approve_payload)
-            
-            buffered_gas = int(gas_estimate * 1.2)
-            approve_payload['gas'] = min(buffered_gas, MAX_GAS_LIMIT)
+            # Gas estimation removed by user request. Using MAX_GAS_LIMIT.
+            approve_payload['gas'] = MAX_GAS_LIMIT
 
             approve_txn = token_contract.functions.approve(
                 spender_address, amount_to_approve_wei
