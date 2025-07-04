@@ -342,12 +342,12 @@ def _prepare_uniswap_v3_swap(
             print("  - Quoter 'quoteExactInputSingle' failed, trying 'quoteExactInput'...")
             try:
                 path = HexBytes(token_in) + chosen_fee.to_bytes(3, 'big') + HexBytes(token_out)
-                quote_tuple = resilient_rpc_call(
+                # quoteExactInput returns a single integer, not a tuple
+                amount_out_wei = resilient_rpc_call(
                     lambda: quoter.functions.quoteExactInput(path, amount_in_wei).call(
                         {"from": account.address, "gas": 500_000}
                     )
                 )
-                amount_out_wei = int(quote_tuple[0])
             except Exception as err:
                 # silent-revert fallback path
                 if "execution reverted" in str(err):
