@@ -250,7 +250,8 @@ def _prepare_uniswap_v3_swap(
         router_info: dict,
         amount_in_wei: int,
         token_in: str,
-        token_out: str
+        token_out: str,
+        pair_address: str = None
     ):
     """
     Prepares a Uniswap-V3 style swap and **never** dies on
@@ -267,18 +268,31 @@ def _prepare_uniswap_v3_swap(
     # ------------------------------------------------------------------ #
     # ① find a pool that actually exists (code size > 0)
     # ------------------------------------------------------------------ #
-    FEE_TIERS = [500, 3000, 10000, 2500, 100]
     chosen_fee, pool_address = None, None
-    zero = "0x" + "00" * 20
+    
+    if pair_address and w3.eth.get_code(pair_address):
+        print(f"  - Using provided pool address: {pair_address}")
+        pool_contract = w3.eth.contract(address=pair_address, abi=_get_v3_pool_abi(dex_name))
+        try:
+            # Confirm fee tier directly from the provided pool
+            chosen_fee = resilient_rpc_call(lambda: pool_contract.functions.fee().call())
+            pool_address = pair_address
+            print(f"  - Successfully confirmed pool at fee tier {chosen_fee} bps.")
+        except Exception as e:
+            print(f"  - WARN: Could not confirm fee for provided pool {pair_address}. Falling back to factory search. Error: {e}")
 
-    for fee in FEE_TIERS:
-        addr = resilient_rpc_call(
-            lambda: factory.functions.getPool(token_in, token_out, fee).call()
-        )
-        if addr and addr != zero and w3.eth.get_code(addr):
-            chosen_fee, pool_address = fee, addr
-            print(f"  - Pool {addr} at {fee} bps selected")
-            break
+    if not pool_address:
+        print(f"  - No valid pool provided. Querying factory {factory_address} for a pool...")
+        FEE_TIERS = [500, 3000, 10000, 2500, 100]
+        zero = "0x" + "00" * 20
+        for fee in FEE_TIERS:
+            addr = resilient_rpc_call(
+                lambda: factory.functions.getPool(token_in, token_out, fee).call()
+            )
+            if addr and addr != zero and w3.eth.get_code(addr):
+                chosen_fee, pool_address = fee, addr
+                print(f"  - Pool {addr} at {fee} bps selected")
+                break
 
     if not pool_address:
         raise ValueError(f"No live V3 pool for pair on {dex_name}")
@@ -495,7 +509,7 @@ def execute_trade(buy_pool, sell_pool, spread, token_address):
             else: # Default to uniswapv2
                 swap_function, _ = _prepare_uniswap_v2_swap(buy_router_info, amount_in_wei, [BASE_CURRENCY_ADDRESS, token_address], pair_address=buy_pool['pairAddress'])
         elif buy_router_info['version'] == 3:
-            swap_function, _ = _prepare_uniswap_v3_swap(buy_dex_name, buy_router_info, amount_in_wei, BASE_CURRENCY_ADDRESS, token_address)
+            swap_function, _ = _prepare_uniswap_v3_swap(buy_dex_name, buy_router_info, amount_in_wei, BASE_CURRENCY_ADDRESS, token_address, pair_address=buy_pool['pairAddress'])
         else:
             raise NotImplementedError(f"DEX version {buy_router_info['version']} or type '{router_type}' is not supported for buys.")
         
@@ -545,7 +559,7 @@ def execute_trade(buy_pool, sell_pool, spread, token_address):
             else: # Default to uniswapv2
                 sell_swap_function, _ = _prepare_uniswap_v2_swap(sell_router_info, amount_received_wei, [token_address, BASE_CURRENCY_ADDRESS], pair_address=sell_pool['pairAddress'])
         elif sell_router_info['version'] == 3:
-            sell_swap_function, _ = _prepare_uniswap_v3_swap(sell_dex_name, sell_router_info, amount_received_wei, token_address, BASE_CURRENCY_ADDRESS)
+            sell_swap_function, _ = _prepare_uniswap_v3_swap(sell_dex_name, sell_router_info, amount_received_wei, token_address, BASE_CURRENCY_ADDRESS, pair_address=sell_pool['pairAddress'])
         else:
             raise NotImplementedError(f"DEX version {sell_router_info['version']} or type '{router_type_sell}' is not supported for sells.")
 

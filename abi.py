@@ -169,6 +169,13 @@ UNISWAP_V3_POOL_ABI = [
         "outputs": [
             {"name": "", "type": "uint128"}
         ]
+    },
+    {
+        "name": "fee",
+        "type": "function",
+        "stateMutability": "view",
+        "inputs": [],
+        "outputs": [{"name": "", "type": "uint24"}]
     }
 ]
 
