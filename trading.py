@@ -324,58 +324,46 @@ def _prepare_uniswap_v3_swap(
     print(f"  - Pool initialised with {liquidity} liquidity")
 
     # ------------------------------------------------------------------ #
-    # ③ detect tokens that break static-calls (fee-on-transfer, rebasing)
-    # ------------------------------------------------------------------ #
-    def _is_static_safe(token_addr: str) -> bool:
-        erc = w3.eth.contract(token_addr, abi=ERC20_ABI)
-        try:
-            erc.functions.totalSupply().call({"gas": 25_000})
-            return True
-        except ContractLogicError:
-            return False
-
-    static_safe = _is_static_safe(token_in) and _is_static_safe(token_out)
-
-    # ------------------------------------------------------------------ #
     # ④ obtain a quote – primary: QuoterV2, fallback: router/helper, last:
     #    constant-product estimate (reserves)
     # ------------------------------------------------------------------ #
     amount_out_wei = None
-    if static_safe:
-        quoter_addr = router_info.get("quoter")
-        if not quoter_addr:
-            raise ValueError("Router config missing 'quoter' address")
 
-        print(f"  - Using quoter {quoter_addr} …")
-        quoter = w3.eth.contract(quoter_addr, abi=UNISWAP_V3_QUOTER_ABI)
-        params = (token_in, token_out, chosen_fee, amount_in_wei, 0)
+    quoter_addr = router_info.get("quoter")
+    if not quoter_addr:
+        raise ValueError("Router config missing 'quoter' address")
 
+    print(f"  - Using quoter {quoter_addr} …")
+    quoter = w3.eth.contract(quoter_addr, abi=UNISWAP_V3_QUOTER_ABI)
+    params = (token_in, token_out, chosen_fee, amount_in_wei, 0)
+
+    try:
+        # Try V3-style single-hop quote first
+        params_single = (token_in, token_out, chosen_fee, amount_in_wei, 0)
+        print(f"  - Using quoter params {params_single}")
+        quote_tuple = resilient_rpc_call(
+            lambda: quoter.functions.quoteExactInputSingle(params_single).call(
+                {"from": account.address, "gas": 500_000}
+            )
+        )
+        amount_out_wei = int(quote_tuple[0])
+    except Exception:
+        # If single fails, try V2-style path-based quote
+        print("  - Quoter 'quoteExactInputSingle' failed, trying 'quoteExactInput'...")
         try:
-            # Try V3-style single-hop quote first
-            params_single = (token_in, token_out, chosen_fee, amount_in_wei, 0)
-            quote_tuple = resilient_rpc_call(
-                lambda: quoter.functions.quoteExactInputSingle(params_single).call(
+            path = HexBytes(token_in) + chosen_fee.to_bytes(3, 'big') + HexBytes(token_out)
+            # quoteExactInput returns a single integer, not a tuple
+            amount_out_wei = resilient_rpc_call(
+                lambda: quoter.functions.quoteExactInput(path, amount_in_wei).call(
                     {"from": account.address, "gas": 500_000}
                 )
             )
-            amount_out_wei = int(quote_tuple[0])
-        except Exception:
-            # If single fails, try V2-style path-based quote
-            print("  - Quoter 'quoteExactInputSingle' failed, trying 'quoteExactInput'...")
-            try:
-                path = HexBytes(token_in) + chosen_fee.to_bytes(3, 'big') + HexBytes(token_out)
-                # quoteExactInput returns a single integer, not a tuple
-                amount_out_wei = resilient_rpc_call(
-                    lambda: quoter.functions.quoteExactInput(path, amount_in_wei).call(
-                        {"from": account.address, "gas": 500_000}
-                    )
-                )
-            except Exception as err:
-                # silent-revert fallback path
-                if "execution reverted" in str(err):
-                    print("  - Quoter reverted without data; trying router helper")
-                else:
-                    raise
+        except Exception as err:
+            # silent-revert fallback path
+            if "execution reverted" in str(err):
+                print("  - Quoter reverted without data; trying router helper")
+            else:
+                raise
     # ↓ Router-level helper (not available on all deployments)
     if amount_out_wei is None and hasattr(pool.functions, "getQuote"):
         try:
@@ -409,11 +397,13 @@ def _prepare_uniswap_v3_swap(
         }
         return router.functions.exactInputSingle(swap_params)
 
+    print(f"  - Prepare swap")
     swap_fn = _build_v3_swap_fn(amount_out_min)
 
     # Final check: can we estimate gas for this swap? It's the most reliable
     # way to see if the router will accept it.
     try:
+        print(f"  - Estimate gas")
         resilient_rpc_call(lambda: swap_fn.estimate_gas({"from": account.address}))
         return swap_fn, amount_out_min
     except Exception as e:
