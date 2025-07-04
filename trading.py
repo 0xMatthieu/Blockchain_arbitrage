@@ -360,15 +360,9 @@ def _prepare_uniswap_v3_swap(
         except Exception:
             pass
 
-    # ↓ constant-product approximation if everything else failed
+    # ↓ Final check after all quote methods attempted
     if amount_out_wei is None:
-        print("  - Falling back to reserve-based estimate")
-        # (reserve0, reserve1) mapping depends on token sorting
-        reserve0, reserve1, *_ = pool.functions.getReserves().call()
-        if token_in.lower() < token_out.lower():
-            amount_out_wei = amount_in_wei * reserve1 // (reserve0 + amount_in_wei)
-        else:
-            amount_out_wei = amount_in_wei * reserve0 // (reserve1 + amount_in_wei)
+        raise ValueError("All V3 quote methods failed (Quoter, router helper). Cannot proceed.")
 
     # ------------------------------------------------------------------ #
     # ⑤ slippage guard & swap-function build
