@@ -329,19 +329,31 @@ def _prepare_uniswap_v3_swap(
         params = (token_in, token_out, chosen_fee, amount_in_wei, 0)
 
         try:
+            # Try V3-style single-hop quote first
+            params_single = (token_in, token_out, chosen_fee, amount_in_wei, 0)
             quote_tuple = resilient_rpc_call(
-                lambda: quoter.functions.quoteExactInputSingle(params).call(
+                lambda: quoter.functions.quoteExactInputSingle(params_single).call(
                     {"from": account.address, "gas": 500_000}
                 )
             )
             amount_out_wei = int(quote_tuple[0])
-
-        except ContractLogicError as err:
-            # silent-revert fallback path
-            if "execution reverted" in str(err):
-                print("  - Quoter reverted without data; trying router helper")
-            else:
-                raise
+        except Exception:
+            # If single fails, try V2-style path-based quote
+            print("  - Quoter 'quoteExactInputSingle' failed, trying 'quoteExactInput'...")
+            try:
+                path = token_in.encode("utf-8") + chosen_fee.to_bytes(3, 'big') + token_out.encode("utf-8")
+                quote_tuple = resilient_rpc_call(
+                    lambda: quoter.functions.quoteExactInput(path, amount_in_wei).call(
+                        {"from": account.address, "gas": 500_000}
+                    )
+                )
+                amount_out_wei = int(quote_tuple[0])
+            except Exception as err:
+                # silent-revert fallback path
+                if "execution reverted" in str(err):
+                    print("  - Quoter reverted without data; trying router helper")
+                else:
+                    raise
     # ↓ Router-level helper (not available on all deployments)
     if amount_out_wei is None and hasattr(pool.functions, "getQuote"):
         try:

@@ -4,7 +4,7 @@ import json
 import time
 from config import (
     w3, account, TOKEN_ADDRESSES, BASE_CURRENCY_ADDRESS, DEX_ROUTERS,
-    MIN_LIQUIDITY_USD, MIN_VOLUME_USD, MIN_SPREAD_PERCENT, POLL_INTERVAL, TRADE_COOLDOWN_SECONDS,
+    MIN_LIQUIDITY_USD, MIN_VOLUME_USD, MIN_SPREAD_PERCENT, POLL_INTERVAL, POLL_INTERVAL_ERROR, TRADE_COOLDOWN_SECONDS,
     TRADE_AMOUNT_BASE_TOKEN, V2_FEE_BPS, V3_FEE_MAP
 )
 from abi import ERC20_ABI
@@ -169,8 +169,10 @@ def main():
 
             except requests.exceptions.RequestException as e:
                 LAST_BANNERS_LOG[token_address] = f"[{token_address[-6:]}] API Error: {str(e)[:80]}"
+                time.sleep(POLL_INTERVAL_ERROR)
             except Exception as e:
                 LAST_BANNERS_LOG[token_address] = f"[{token_address[-6:]}] App Error: {str(e)[:80]}"
+                time.sleep(POLL_INTERVAL_ERROR)
             
             # --- Display Banners ---
             """
