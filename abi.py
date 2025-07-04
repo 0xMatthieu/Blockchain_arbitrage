@@ -272,19 +272,61 @@ SOLIDLY_PAIR_ABI = [
 ]
 
 PANCAKE_V3_POOL_ABI = [
+    # ----- slot0 (unchanged selector 0x3850c7bd) ---------------------------
     {
         "name": "slot0",
-        "stateMutability": "view",
         "type": "function",
+        "stateMutability": "view",
         "inputs": [],
         "outputs": [
-            {"name": "sqrtPriceX96",            "type": "uint160"},
-            {"name": "tick",                    "type": "int24"},
-            {"name": "observationIndex",        "type": "uint16"},
-            {"name": "observationCardinality",  "type": "uint16"},
+            {"name": "sqrtPriceX96",             "type": "uint160"},
+            {"name": "tick",                     "type": "int24"},
+            {"name": "observationIndex",         "type": "uint16"},
+            {"name": "observationCardinality",   "type": "uint16"},
             {"name": "observationCardinalityNext","type": "uint16"},
-            {"name": "feeProtocol",             "type": "uint32"},   # 32-bit!
-            {"name": "unlocked",                "type": "bool"}
+            {"name": "feeProtocol",              "type": "uint32"},   # Pancake uses uint32 here
+            {"name": "unlocked",                 "type": "bool"}
+        ]
+    },
+    # ----- liquidity (selector 0x1a686502) -------------------------------
+    {
+        "name": "liquidity",
+        "type": "function",
+        "stateMutability": "view",
+        "inputs": [],
+        "outputs": [
+            {"name": "", "type": "uint128"}
+        ]
+    }
+]
+
+# 1inch Aggregation Router V6 – minimal ABI (swap only)
+ONEINCH_V6_ROUTER_ABI = [
+    {
+        "name": "swap",
+        "type": "function",
+        "stateMutability": "payable",
+        "inputs": [
+            {"name": "executor", "type": "address"},      # 1inch executor contract
+            {
+                "components": [
+                    {"name": "srcToken",     "type": "address"},
+                    {"name": "dstToken",     "type": "address"},
+                    {"name": "srcReceiver",  "type": "address"},
+                    {"name": "dstReceiver",  "type": "address"},
+                    {"name": "amount",       "type": "uint256"},
+                    {"name": "minReturn",    "type": "uint256"},
+                    {"name": "flags",        "type": "uint256"},
+                    {"name": "permit",       "type": "bytes"}
+                ],
+                "name": "desc",
+                "type": "tuple"
+            },
+            {"name": "data",   "type": "bytes"}           # encoded calls for executor
+        ],
+        "outputs": [
+            {"name": "returnAmount", "type": "uint256"},
+            {"name": "spentAmount",  "type": "uint256"}
         ]
     }
 ]
