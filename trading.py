@@ -167,21 +167,43 @@ def _prepare_solidly_swap(
 
     # ---------- 3️⃣  quote ----------
     router = w3.eth.contract(router_info["address"], abi=SOLIDLY_ROUTER_ABI)
-    routes = [(token_in, token_out, is_stable, factory)]
-    amounts = resilient_rpc_call(
-        lambda: router.functions.getAmountsOut(amount_in_wei, routes).call(
-            {"from": account.address}
-        )
-    )
+    
+    amounts = None
+    final_is_stable = False
+    
+    # Try quoting first as a volatile pool, then as a stable pool if that fails.
+    for is_stable_try in [False, True]:
+        try:
+            routes = [(token_in, token_out, is_stable_try, factory)]
+            amounts = resilient_rpc_call(
+                lambda: router.functions.getAmountsOut(amount_in_wei, routes).call(
+                    {"from": account.address}
+                )
+            )
+            final_is_stable = is_stable_try
+            print(f"  - Successfully quoted as {'stable' if is_stable_try else 'volatile'} pool.")
+            break # Exit loop on success
+        except Exception as e:
+            if "revert" in str(e).lower():
+                print(f"  - Quote as {'stable' if is_stable_try else 'volatile'} failed. Trying other type...")
+                continue # Try the next stability type
+            else:
+                raise # Re-raise unexpected errors
+
+    if amounts is None:
+        raise ValueError(f"{dex_name}: Could not get quote for pool {pool} as either stable or volatile.")
+
     min_out = int(amounts[-1] * (1 - SLIPPAGE_TOLERANCE_PERCENT / 100.0))
 
     # ---------- 4️⃣  helper to build either classic or FOT-safe swap ----------
     def _build_swap_fn(out_min: int):
+        # Use the stability flag that succeeded during the quote
+        final_routes = [(token_in, token_out, final_is_stable, factory)]
         if "swapExactTokensForTokensSupportingFeeOnTransferTokens" in router.functions:
             return router.functions.swapExactTokensForTokensSupportingFeeOnTransferTokens(
                 amount_in_wei,
                 out_min,
-                routes,
+                final_routes,
                 account.address,
                 int(time.time()) + 300,
             )
@@ -189,7 +211,7 @@ def _prepare_solidly_swap(
         return router.functions.swapExactTokensForTokens(
             amount_in_wei,
             out_min,
-            routes,
+            final_routes,
             account.address,
             int(time.time()) + 300,
         )
