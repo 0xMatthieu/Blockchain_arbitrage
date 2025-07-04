@@ -93,6 +93,27 @@ def main():
             time.sleep(1)
         print("--- Initial Approval Checks Complete ---\n")
 
+    print("--- Initial Pool Liquidity & Volume Check ---")
+    for token_address in TOKEN_ADDRESSES:
+        try:
+            api_url = f"https://api.dexscreener.com/latest/dex/tokens/{token_address}"
+            response = requests.get(api_url)
+            response.raise_for_status()
+            j = response.json()
+
+            if not j or not j.get('pairs'):
+                print(f"\nToken: {token_address} - No pairs found.")
+                continue
+
+            print(f"\n--- Token: {token_address} ---")
+            for p in j['pairs']:
+                liquidity_usd = p.get('liquidity', {}).get('usd', 0)
+                volume_h24 = p.get('volume', {}).get('h24', 0)
+                print(f"  - DEX: {p['dexId']:<15} | Pool: {p['pairAddress']} | Liq: ${liquidity_usd:12,.2f} | Vol: ${volume_h24:12,.2f}")
+        except Exception as e:
+            print(f"\nCould not fetch initial pool data for {token_address}: {e}")
+    print("-" * 50)
+
     print(f"Starting arbitrage analysis for tokens: {TOKEN_ADDRESSES}")
     print(f"Polling API every {POLL_INTERVAL:.2f} seconds for each token.")
     print("-" * 50)

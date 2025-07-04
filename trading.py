@@ -175,6 +175,7 @@ def _prepare_solidly_swap(
     # ---------- 2️⃣  reserves sanity-check ----------
     pair = w3.eth.contract(pool, abi=SOLIDLY_PAIR_ABI)
     r0, r1, _ = resilient_rpc_call(lambda: pair.functions.getReserves().call())
+    print(f"  - On-chain reserves: r0={r0}, r1={r1}")
     if r0 == 0 or r1 == 0:
         raise ValueError(f"{dex_name}: pool has zero reserves")
 
@@ -221,7 +222,15 @@ def _prepare_solidly_swap(
         min_out_safe = int(amounts[-1] * (1 - safety_slippage_bps / 10_000))
         swap_fn = _build_swap_fn(min_out_safe if min_out_safe > 0 else 0)
         final_min_out = min_out_safe
-        # If even this reverts, the calling code will catch it.
+        
+        # Re-check gas estimate with the new zero-min-out swap function.
+        # If this also fails, the pool is truly broken/illiquid.
+        try:
+            swap_fn.estimate_gas({"from": account.address})
+            print("  - Gas estimation with minOut=0 succeeded. Proceeding with caution.")
+        except ContractLogicError as e:
+            print("  - ↪ Gas estimation FAILED even with minOut=0. Pool is unusable.")
+            raise ValueError(f"{dex_name}: Pool is illiquid or broken, swap would fail.") from e
 
     return swap_fn, final_min_out
 
