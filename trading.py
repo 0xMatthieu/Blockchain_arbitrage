@@ -1,15 +1,16 @@
 import time
+import requests
 from web3.logs import DISCARD
 from web3.exceptions import ContractLogicError
 from config import (
     w3, account, PRIVATE_KEY, MAX_GAS_LIMIT, DEX_ROUTERS,
     BASE_CURRENCY_ADDRESS, TRADE_AMOUNT_BASE_TOKEN, SLIPPAGE_TOLERANCE_PERCENT,
-    RPC_MAX_RETRIES, RPC_BACKOFF_FACTOR, BOT_WALLET
+    RPC_MAX_RETRIES, RPC_BACKOFF_FACTOR, BOT_WALLET, ONEINCH_API_KEY
 )
 from abi import (
     ERC20_ABI, UNISWAP_V2_ROUTER_ABI, UNISWAP_V3_ROUTER_ABI, SOLIDLY_ROUTER_ABI,
     SOLIDLY_FACTORY_ABI, UNISWAP_V3_POOL_ABI, UNISWAP_V3_FACTORY_ABI, SOLIDLY_PAIR_ABI,
-    UNISWAP_V3_QUOTER_ABI, PANCAKE_V3_POOL_ABI
+    UNISWAP_V3_QUOTER_ABI, PANCAKE_V3_POOL_ABI, ONEINCH_V6_ROUTER_ABI
 )
 from dex_utils import find_router_info
 
@@ -72,6 +73,43 @@ def _get_v3_pool_abi(dex_name):
         return PANCAKE_V3_POOL_ABI
     print("  - Using Uniswap V3 Pool ABI.")
     return UNISWAP_V3_POOL_ABI
+
+
+def _prepare_1inch_swap(chain_id, amount_in_wei, token_in, token_out):
+    """
+    Prepares a swap transaction using the 1inch Aggregation Protocol API.
+    """
+    if not ONEINCH_API_KEY:
+        raise ValueError("1inch API key is not set. Please add ONEINCH_API_KEY to your .env file.")
+
+    api_url = f"https://api.1inch.dev/swap/v6.0/{chain_id}/swap"
+    
+    params = {
+        "src": token_in,
+        "dst": token_out,
+        "amount": str(amount_in_wei),
+        "from": account.address,
+        "slippage": SLIPPAGE_TOLERANCE_PERCENT,
+        "disableEstimate": "true", # We do our own gas estimation
+        "receiver": account.address,
+    }
+
+    headers = {"Authorization": f"Bearer {ONEINCH_API_KEY}"}
+
+    print("  - Calling 1inch API to get swap data...")
+    response = requests.get(api_url, params=params, headers=headers)
+    response.raise_for_status() # Will raise an exception for 4XX/5XX errors
+    
+    swap_data = response.json()
+    
+    # The API returns the destination amount as a string
+    quoted_amount_out_wei = int(swap_data['dstAmount'])
+    amount_out_min_wei = int(quoted_amount_out_wei * (1 - SLIPPAGE_TOLERANCE_PERCENT / 100.0))
+    
+    print(f"  - 1inch API Quote - Min Amount Out: {amount_out_min_wei}")
+    
+    # The 'tx' object contains all we need for the transaction
+    return swap_data['tx'], amount_out_min_wei
 
 
 def _prepare_solidly_swap(dex_name, router_info, amount_in_wei, token_in, token_out):
@@ -296,33 +334,53 @@ def execute_trade(buy_pool, sell_pool, spread, token_address):
         target_token_contract = w3.eth.contract(address=token_address, abi=ERC20_ABI)
         target_decimals = resilient_rpc_call(lambda: target_token_contract.functions.decimals().call())
 
-        if buy_router_info['version'] == 2:
-            router_type = buy_router_info.get('type', 'uniswapv2')
-            if router_type == 'solidly':
-                swap_function, _ = _prepare_solidly_swap(buy_dex_name, buy_router_info, amount_in_wei, BASE_CURRENCY_ADDRESS, token_address)
-            else: # Default to uniswapv2
-                swap_function, _ = _prepare_uniswap_v2_swap(buy_router_info, amount_in_wei, [BASE_CURRENCY_ADDRESS, token_address])
-        elif buy_router_info['version'] == 3:
-            swap_function, _ = _prepare_uniswap_v3_swap(buy_dex_name, buy_router_info, amount_in_wei, BASE_CURRENCY_ADDRESS, token_address)
-        else:
-            raise NotImplementedError(f"DEX version {buy_router_info['version']} is not supported for buys.")
+        # --- Transaction Preparation ---
+        chain_id = resilient_rpc_call(lambda: w3.eth.chain_id)
+        router_type = buy_router_info.get('type', 'uniswapv2')
+        buy_txn = None
 
-        print("  - Building buy transaction...")
         max_priority_fee = resilient_rpc_call(lambda: w3.eth.max_priority_fee)
         latest_block = resilient_rpc_call(lambda: w3.eth.get_block('latest'))
         base_fee = latest_block['baseFeePerGas']
         max_fee_per_gas = base_fee * 2 + max_priority_fee
-        
-        buy_payload = {
-            'from': account.address, 
-            'nonce': resilient_rpc_call(lambda: w3.eth.get_transaction_count(account.address)),
-            'maxFeePerGas': max_fee_per_gas, 'maxPriorityFeePerGas': max_priority_fee,
-            'chainId': resilient_rpc_call(lambda: w3.eth.chain_id)
-        }
-        gas_estimate = resilient_rpc_call(lambda: swap_function.estimate_gas(buy_payload))
-        buy_payload['gas'] = min(int(gas_estimate * 1.2), MAX_GAS_LIMIT)
-        buy_txn = swap_function.build_transaction(buy_payload)
-        
+        nonce = resilient_rpc_call(lambda: w3.eth.get_transaction_count(account.address))
+
+        if router_type == '1inch':
+            print("  - Preparing 1inch swap...")
+            oneinch_tx_params, _ = _prepare_1inch_swap(chain_id, amount_in_wei, BASE_CURRENCY_ADDRESS, token_address)
+            buy_txn = {
+                'from': oneinch_tx_params['from'], 'to': oneinch_tx_params['to'],
+                'value': int(oneinch_tx_params['value']), 'data': oneinch_tx_params['data'],
+                'nonce': nonce, 'maxFeePerGas': max_fee_per_gas,
+                'maxPriorityFeePerGas': max_priority_fee, 'chainId': chain_id,
+            }
+            gas_estimate = resilient_rpc_call(lambda: w3.eth.estimate_gas(buy_txn))
+            buy_txn['gas'] = min(int(gas_estimate * 1.2), MAX_GAS_LIMIT)
+        else:
+            swap_function = None
+            if buy_router_info['version'] == 2:
+                if router_type == 'solidly':
+                    swap_function, _ = _prepare_solidly_swap(buy_dex_name, buy_router_info, amount_in_wei, BASE_CURRENCY_ADDRESS, token_address)
+                else: # Default to uniswapv2
+                    swap_function, _ = _prepare_uniswap_v2_swap(buy_router_info, amount_in_wei, [BASE_CURRENCY_ADDRESS, token_address])
+            elif buy_router_info['version'] == 3:
+                swap_function, _ = _prepare_uniswap_v3_swap(buy_dex_name, buy_router_info, amount_in_wei, BASE_CURRENCY_ADDRESS, token_address)
+            else:
+                raise NotImplementedError(f"DEX version {buy_router_info['version']} is not supported for buys.")
+            
+            print("  - Building buy transaction...")
+            buy_payload = {
+                'from': account.address, 'nonce': nonce,
+                'maxFeePerGas': max_fee_per_gas, 'maxPriorityFeePerGas': max_priority_fee,
+                'chainId': chain_id
+            }
+            gas_estimate = resilient_rpc_call(lambda: swap_function.estimate_gas(buy_payload))
+            buy_payload['gas'] = min(int(gas_estimate * 1.2), MAX_GAS_LIMIT)
+            buy_txn = swap_function.build_transaction(buy_payload)
+
+        if not buy_txn:
+            raise Exception("Failed to build buy transaction.")
+
         signed_buy_txn = w3.eth.account.sign_transaction(buy_txn, PRIVATE_KEY)
         buy_tx_hash = w3.eth.send_raw_transaction(signed_buy_txn.raw_transaction)
         print(f"  - Buy Tx sent: {buy_tx_hash.hex()}. Waiting for receipt...")
@@ -342,28 +400,47 @@ def execute_trade(buy_pool, sell_pool, spread, token_address):
         # --- 2. SELL TRANSACTION ---
         print(f"Step 2: Selling {amount_received_wei / (10**target_decimals)} of {token_address} on {sell_dex_name} (v{sell_router_info['version']})...")
         
-        if sell_router_info['version'] == 2:
-            router_type = sell_router_info.get('type', 'uniswapv2')
-            if router_type == 'solidly':
-                sell_swap_function, _ = _prepare_solidly_swap(sell_dex_name, sell_router_info, amount_received_wei, token_address, BASE_CURRENCY_ADDRESS)
-            else: # Default to uniswapv2
-                sell_swap_function, _ = _prepare_uniswap_v2_swap(sell_router_info, amount_received_wei, [token_address, BASE_CURRENCY_ADDRESS])
-        elif sell_router_info['version'] == 3:
-            sell_swap_function, _ = _prepare_uniswap_v3_swap(sell_dex_name, sell_router_info, amount_received_wei, token_address, BASE_CURRENCY_ADDRESS)
+        # --- Sell Transaction Preparation ---
+        router_type_sell = sell_router_info.get('type', 'uniswapv2')
+        sell_txn = None
+        sell_nonce = resilient_rpc_call(lambda: w3.eth.get_transaction_count(account.address))
+
+        if router_type_sell == '1inch':
+            print("  - Preparing 1inch sell swap...")
+            oneinch_tx_params, _ = _prepare_1inch_swap(chain_id, amount_received_wei, token_address, BASE_CURRENCY_ADDRESS)
+            sell_txn = {
+                'from': oneinch_tx_params['from'], 'to': oneinch_tx_params['to'],
+                'value': int(oneinch_tx_params['value']), 'data': oneinch_tx_params['data'],
+                'nonce': sell_nonce, 'maxFeePerGas': max_fee_per_gas,
+                'maxPriorityFeePerGas': max_priority_fee, 'chainId': chain_id,
+            }
+            gas_estimate_sell = resilient_rpc_call(lambda: w3.eth.estimate_gas(sell_txn))
+            sell_txn['gas'] = min(int(gas_estimate_sell * 1.2), MAX_GAS_LIMIT)
         else:
-            raise NotImplementedError(f"DEX version {sell_router_info['version']} is not supported for sells.")
+            sell_swap_function = None
+            if sell_router_info['version'] == 2:
+                if router_type_sell == 'solidly':
+                    sell_swap_function, _ = _prepare_solidly_swap(sell_dex_name, sell_router_info, amount_received_wei, token_address, BASE_CURRENCY_ADDRESS)
+                else: # Default to uniswapv2
+                    sell_swap_function, _ = _prepare_uniswap_v2_swap(sell_router_info, amount_received_wei, [token_address, BASE_CURRENCY_ADDRESS])
+            elif sell_router_info['version'] == 3:
+                sell_swap_function, _ = _prepare_uniswap_v3_swap(sell_dex_name, sell_router_info, amount_received_wei, token_address, BASE_CURRENCY_ADDRESS)
+            else:
+                raise NotImplementedError(f"DEX version {sell_router_info['version']} is not supported for sells.")
 
-        print("  - Building sell transaction...")
-        sell_payload = {
-            'from': account.address, 
-            'nonce': resilient_rpc_call(lambda: w3.eth.get_transaction_count(account.address)),
-            'maxFeePerGas': max_fee_per_gas, 'maxPriorityFeePerGas': max_priority_fee,
-            'chainId': resilient_rpc_call(lambda: w3.eth.chain_id)
-        }
-        gas_estimate_sell = resilient_rpc_call(lambda: sell_swap_function.estimate_gas(sell_payload))
-        sell_payload['gas'] = min(int(gas_estimate_sell * 1.2), MAX_GAS_LIMIT)
-        sell_txn = sell_swap_function.build_transaction(sell_payload)
+            print("  - Building sell transaction...")
+            sell_payload = {
+                'from': account.address, 'nonce': sell_nonce,
+                'maxFeePerGas': max_fee_per_gas, 'maxPriorityFeePerGas': max_priority_fee,
+                'chainId': chain_id
+            }
+            gas_estimate_sell = resilient_rpc_call(lambda: sell_swap_function.estimate_gas(sell_payload))
+            sell_payload['gas'] = min(int(gas_estimate_sell * 1.2), MAX_GAS_LIMIT)
+            sell_txn = sell_swap_function.build_transaction(sell_payload)
 
+        if not sell_txn:
+            raise Exception("Failed to build sell transaction.")
+            
         signed_sell_txn = w3.eth.account.sign_transaction(sell_txn, PRIVATE_KEY)
         sell_tx_hash = w3.eth.send_raw_transaction(signed_sell_txn.raw_transaction)
         print(f"  - Sell Tx sent: {sell_tx_hash.hex()}. Waiting for receipt...")
