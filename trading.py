@@ -19,54 +19,41 @@ from web3.exceptions import ContractLogicError
 
 def resilient_rpc_call(callable_func):
     """
-    Execute `callable_func` (usually a web3 call) with exponential back-off.
-
-    * If it succeeds → return result immediately.
-    * If it reverts **with** payload (Quoter V2 style) → decode & return the
-      first uint256 (amountOut).
-    * Any other error → retry up to RPC_MAX_RETRIES, doubling the delay.
+    Execute `callable_func` with exponential back-off for retries.
+    This function handles RPC errors, including silent reverts from Quoters.
     """
-    # expect the Quoter V2 output layout once decoded
     _QUOTER_V2_RET_TYPES = ["uint256", "uint160", "uint32", "uint256"]
+    last_exception = None
 
     for i in range(RPC_MAX_RETRIES):
         try:
-            result = callable_func()
-            return result
-
+            return callable_func()
         except ContractLogicError as err:
-            # ↪ web3-py puts the tx receipt dict as err.args[0]
-            payload = None
-            print(f"  - [RPC] ContractLogicError {err}")
-            if err.args and isinstance(err.args[0], dict):
-                payload = err.args[0].get("data", b"")
-                print(f"  - [RPC] payload: {payload}")
-
-            # payload comes back as HexBytes; length > 4 → has real data
+            last_exception = err
+            # Try to decode a Quoter V2-style revert with data payload
+            payload = err.args[0].get("data") if err.args and isinstance(err.args[0], dict) else None
             if payload and len(payload) > 4:
                 print("  - [RPC] Call reverted with data. Attempting to decode as Quoter V2 response.")
-                # strip first 4B selector if present
                 data_bytes = HexBytes(payload)[4:] if len(payload) % 32 else HexBytes(payload)
-                # decode up to the 4 items Quoter V2 returns
                 decoded = decode(_QUOTER_V2_RET_TYPES, data_bytes.ljust(32 * 4, b"\0"))
                 print(f"  - [RPC] Decoded amountOut: {decoded[0]}")
-                return decoded[0]                     # amountOut (uint256)
-
-            # Empty revert is now retried with back-off.
-            wait = RPC_BACKOFF_FACTOR * (2 ** i)
-            print(f"\n  - [RPC] Contract logic error (empty revert): {err}. Retrying in {wait:.2f}s "
-                  f"({i + 1}/{RPC_MAX_RETRIES})")
-            time.sleep(wait)
-            continue # go to next loop iteration
-
+                return decoded[0]
+            # For empty reverts or other logic errors, fall through to retry
         except Exception as err:
-            wait = RPC_BACKOFF_FACTOR * (2 ** i)
-            print(f"\n  - [RPC] Call failed with unhandled exception: {err}. Retrying in {wait:.2f}s "
-                  f"({i + 1}/{RPC_MAX_RETRIES})")
-            time.sleep(wait)
+            last_exception = err
+            # Fall through to retry for any other exception type
 
-    print(f"  - [RPC] Call failed after {RPC_MAX_RETRIES} retries. Raising exception.")
-    raise Exception(f"RPC call failed after {RPC_MAX_RETRIES} retries.")
+        # If we are here, an exception occurred that was not a decodable Quoter revert.
+        # We will wait and retry.
+        if i < RPC_MAX_RETRIES - 1:
+            wait = RPC_BACKOFF_FACTOR * (2 ** i)
+            print(f"\n  - [RPC] Call failed: {last_exception}. Retrying in {wait:.2f}s ({i + 1}/{RPC_MAX_RETRIES})")
+            time.sleep(wait)
+        else:
+            print(f"  - [RPC] Call failed after {RPC_MAX_RETRIES} retries.")
+
+    # After all retries, raise the last captured exception.
+    raise Exception(f"RPC call failed after {RPC_MAX_RETRIES} retries.") from last_exception
 
 def _get_v3_pool_abi(dex_name):
     """Selects the correct V3 pool ABI based on the DEX name."""
