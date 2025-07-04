@@ -29,7 +29,6 @@ BOT_WALLET = os.getenv("BOT_WALLET")
 # Retry mechanism for RPC calls
 RPC_MAX_RETRIES = int(os.getenv("RPC_MAX_RETRIES", 5))
 RPC_BACKOFF_FACTOR = float(os.getenv("RPC_BACKOFF_FACTOR", 0.5))
-ONEINCH_API_KEY = os.getenv("ONEINCH_API_KEY")
 
 # --- Trading Configuration ---
 BASE_CURRENCY_ADDRESS_RAW = os.getenv("BASE_CURRENCY_ADDRESS")
