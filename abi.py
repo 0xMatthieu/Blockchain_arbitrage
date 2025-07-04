@@ -134,6 +134,18 @@ UNISWAP_V3_QUOTER_ABI = [
             {"name": "ticksCrossed",       "type": "uint32"},
             {"name": "gasEstimate",        "type": "uint256"}
         ]
+    },
+    {
+        "name": "quoteExactInput",
+        "type": "function",
+        "stateMutability": "nonpayable",
+        "inputs": [
+            {"internalType": "bytes", "name": "path", "type": "bytes"},
+            {"internalType": "uint256", "name": "amountIn", "type": "uint256"}
+        ],
+        "outputs": [
+            {"name": "amountOut", "type": "uint256"}
+        ]
     }
 ]
 

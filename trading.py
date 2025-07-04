@@ -341,7 +341,7 @@ def _prepare_uniswap_v3_swap(
             # If single fails, try V2-style path-based quote
             print("  - Quoter 'quoteExactInputSingle' failed, trying 'quoteExactInput'...")
             try:
-                path = token_in.encode("utf-8") + chosen_fee.to_bytes(3, 'big') + token_out.encode("utf-8")
+                path = HexBytes(token_in) + chosen_fee.to_bytes(3, 'big') + HexBytes(token_out)
                 quote_tuple = resilient_rpc_call(
                     lambda: quoter.functions.quoteExactInput(path, amount_in_wei).call(
                         {"from": account.address, "gas": 500_000}
