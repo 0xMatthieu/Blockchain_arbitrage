@@ -1,4 +1,5 @@
 import requests
+import sys
 import json
 import time
 from config import (
@@ -13,6 +14,7 @@ from trading import execute_trade
 # --- Global State ---
 last_trade_attempt_ts = 0
 LAST_BANNERS_LOG = {}
+printed_lines = 0          # <- module-level mutable
 
 def _router_fee_bps(pool):
     """Return total fee bps for price quoted by DexScreener item."""
@@ -144,13 +146,28 @@ def main():
                 LAST_BANNERS_LOG[token_address] = f"[{token_address[-6:]}] App Error: {str(e)[:80]}"
             
             # --- Display Banners ---
-            # Move cursor up to rewrite all banners
-            print(f"\033[{len(TOKEN_ADDRESSES)}A", end="")
-            for t_addr in TOKEN_ADDRESSES:
-                # \r to return to start of line, \033[K to clear rest of line
-                print(f"\r{LAST_BANNERS_LOG.get(t_addr, '...')}\033[K")
+            """
+            Overwrite the previous banner block in-place.
 
-            time.sleep(POLL_INTERVAL)
+            `LAST_BANNERS_LOG` must already hold one banner string per token.
+            The display order is the order in which the dict was first populated
+            (Python 3.7+ preserves insertion order).
+            """
+            banners = list(LAST_BANNERS_LOG.values())
+            n = len(banners)
+
+            if n == 0:
+                return  # nothing to draw yet
+
+            # move cursor UP n lines AND to column-0  (ESC[{n}F)
+            sys.stdout.write(f"\033[{n}F")
+
+            # rewrite each line;  \r ensures column-0, \033[K clears leftovers
+            for line in banners:
+                sys.stdout.write(f"\r{line}\033[K\n")
+
+            # flush so the terminal executes the codes immediately
+            sys.stdout.flush()
 
 if __name__ == "__main__":
     try:
