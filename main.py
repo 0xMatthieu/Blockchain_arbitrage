@@ -4,7 +4,7 @@ import json
 import time
 from config import (
     w3, account, TOKEN_ADDRESSES, BASE_CURRENCY_ADDRESS, DEX_ROUTERS,
-    MIN_LIQUIDITY_USD, MIN_SPREAD_PERCENT, POLL_INTERVAL, TRADE_COOLDOWN_SECONDS,
+    MIN_LIQUIDITY_USD, MIN_VOLUME_USD, MIN_SPREAD_PERCENT, POLL_INTERVAL, TRADE_COOLDOWN_SECONDS,
     TRADE_AMOUNT_BASE_TOKEN, V2_FEE_BPS, V3_FEE_MAP
 )
 from abi import ERC20_ABI
@@ -29,17 +29,18 @@ def analyze_and_trade(pairs, token_address):
     if time.time() - last_trade_attempt_ts < TRADE_COOLDOWN_SECONDS:
         return
 
-    # keep only liquid pools
-    liquid_pools = [p for p in pairs if p['liq_usd'] >= MIN_LIQUIDITY_USD]
-    if len(liquid_pools) < 2:
-        pair_symbol = pairs[0]['pair'] if pairs else "Unknown"
-        LAST_BANNERS_LOG[token_address] = f"{pair_symbol:<20} | Not enough liquid pools to analyze. Waiting..."
+    # The pairs list is now pre-filtered for liquidity and volume in main()
+    if len(pairs) < 2:
+        # This message will be displayed if there are fewer than 2 valid pools
+        # after filtering in main(). `pairs` will have 0 or 1 item.
+        pair_symbol = pairs[0]['pair'] if pairs else f"[{token_address[-6:]}]"
+        LAST_BANNERS_LOG[token_address] = f"{pair_symbol:<20} | Not enough valid pools to analyze. Waiting..."
         return
 
     # sort by quoted token price
-    liquid_pools.sort(key=lambda x: x['price'])
-    buy_pool  = liquid_pools[0]
-    sell_pool = liquid_pools[-1]
+    pairs.sort(key=lambda x: x['price'])
+    buy_pool  = pairs[0]
+    sell_pool = pairs[-1]
 
     # ---- fee-adjusted spread ------------------------------------
     buy_fee  = _router_fee_bps(buy_pool)   / 10_000
@@ -115,9 +116,14 @@ def main():
                 else:
                     current_pairs = []
                     for p in j['pairs']:
+                        # --- Pre-filter pools based on liquidity and volume ---
+                        liquidity_usd = p.get('liquidity', {}).get('usd', 0)
+                        volume_h24 = p.get('volume', {}).get('h24', 0)
+
                         if (p.get('priceNative') and p.get('quoteToken') and p.get('quoteToken').get('address') and
                             w3.to_checksum_address(p['quoteToken']['address']) == BASE_CURRENCY_ADDRESS and
-                            p.get('liquidity') and p.get('liquidity').get('usd')):
+                            liquidity_usd >= MIN_LIQUIDITY_USD and
+                            volume_h24 >= MIN_VOLUME_USD):
                             
                             price_native = float(p['priceNative'])
                             price_usd = float(p['priceUsd'])
@@ -128,7 +134,7 @@ def main():
                             current_pairs.append({
                                 'dex': p['dexId'], 'chain' : p['chainId'],
                                 'pair': f"{p['baseToken']['symbol']}/{p['quoteToken']['symbol']}",
-                                'price': price_native, 'liq_usd': float(p['liquidity']['usd']),
+                                'price': price_native, 'liq_usd': liquidity_usd,
                                 'pairAddress': p['pairAddress'], 'feeBps': p.get('feeBps', 0),
                                 'base_currency_price_usd': base_currency_price_usd
                             })

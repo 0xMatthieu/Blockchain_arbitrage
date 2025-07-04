@@ -9,6 +9,7 @@ load_dotenv()
 # --- API and Bot Configuration ---
 TOKEN_ADDRESSES_RAW = os.getenv("TOKEN_ADDRESSES", "")
 MIN_LIQUIDITY_USD = float(os.getenv("MIN_LIQUIDITY_USD", 1000))
+MIN_VOLUME_USD = float(os.getenv("MIN_VOLUME_USD", 1000))
 MIN_SPREAD_PERCENT = float(os.getenv("MIN_SPREAD_PERCENT", 1.0))
 API_CALLS_PER_MINUTE = 280
 POLL_INTERVAL = 60.0 / API_CALLS_PER_MINUTE
