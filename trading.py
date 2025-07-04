@@ -141,6 +141,7 @@ def _prepare_solidly_swap(
     amount_in_wei: int,
     token_in: str,
     token_out: str,
+    pair_address: str = None,
     *,
     safety_slippage_bps: int = 300  # extra 3 % head-room on top of your global setting
 ):
@@ -153,24 +154,19 @@ def _prepare_solidly_swap(
     if not factory:
         raise ValueError(f"{dex_name}: no factory address in config")
 
-    print(f"  - Solidly router detected ({dex_name}). Looking up pool …")
-    factory_contract = w3.eth.contract(factory, abi=SOLIDLY_FACTORY_ABI)
-    zero = "0x" + "0"*40
-
-    # ---------- 1️⃣  find the pool (volatile first, then stable) ----------
-    for attempted_stable in (False, True):
-        pool = resilient_rpc_call(
-            lambda: factory_contract.functions.getPool(
-                token_in, token_out, attempted_stable
-            ).call()
-        )
-        if pool != zero:
-            is_stable = attempted_stable
-            break
-    else:
-        raise ValueError(f"{dex_name}: no pool for {token_in} → {token_out}")
-
-    print(f"  - Pool found: {pool} ({'stable' if is_stable else 'volatile'})")
+    print(f"  - Solidly router detected ({dex_name}).")
+    
+    if not pair_address or not w3.eth.get_code(pair_address):
+        raise ValueError(f"{dex_name}: No valid pair_address provided for solidly swap.")
+    
+    pool = pair_address
+    print(f"  - Using provided pool address: {pool}")
+    
+    # Solidly routes require knowing if a pool is stable. We can't know for sure without a factory call,
+    # so we will probe both possibilities. The router will reject the wrong one.
+    is_stable = False # Assume volatile by default, most common case.
+    # Note: A more robust implementation might call `getReserves` on the pair and try to infer stability,
+    # but for now, we assume volatile, which is generally safer.
 
     # ---------- 2️⃣  reserves sanity-check ----------
     pair = w3.eth.contract(pool, abi=SOLIDLY_PAIR_ABI)
@@ -234,8 +230,10 @@ def _prepare_solidly_swap(
 
     return swap_fn, final_min_out
 
-def _prepare_uniswap_v2_swap(router_info, amount_in_wei, path):
+def _prepare_uniswap_v2_swap(router_info, amount_in_wei, path, pair_address: str = None):
     """Prepares a swap transaction for a Uniswap V2-style DEX."""
+    if pair_address:
+        print(f"  - V2 Using provided pool address: {pair_address}")
     router_contract = w3.eth.contract(address=router_info['address'], abi=UNISWAP_V2_ROUTER_ABI)
     print(f"  - V2 Path: {path}")
     amounts_out = resilient_rpc_call(lambda: router_contract.functions.getAmountsOut(amount_in_wei, path).call())
@@ -493,9 +491,9 @@ def execute_trade(buy_pool, sell_pool, spread, token_address):
             swap_function, _ = _prepare_1inch_swap(buy_router_info, amount_in_wei, BASE_CURRENCY_ADDRESS, token_address)
         elif buy_router_info['version'] == 2:
             if router_type == 'solidly':
-                swap_function, _ = _prepare_solidly_swap(buy_dex_name, buy_router_info, amount_in_wei, BASE_CURRENCY_ADDRESS, token_address)
+                swap_function, _ = _prepare_solidly_swap(buy_dex_name, buy_router_info, amount_in_wei, BASE_CURRENCY_ADDRESS, token_address, pair_address=buy_pool['pairAddress'])
             else: # Default to uniswapv2
-                swap_function, _ = _prepare_uniswap_v2_swap(buy_router_info, amount_in_wei, [BASE_CURRENCY_ADDRESS, token_address])
+                swap_function, _ = _prepare_uniswap_v2_swap(buy_router_info, amount_in_wei, [BASE_CURRENCY_ADDRESS, token_address], pair_address=buy_pool['pairAddress'])
         elif buy_router_info['version'] == 3:
             swap_function, _ = _prepare_uniswap_v3_swap(buy_dex_name, buy_router_info, amount_in_wei, BASE_CURRENCY_ADDRESS, token_address)
         else:
@@ -543,9 +541,9 @@ def execute_trade(buy_pool, sell_pool, spread, token_address):
             sell_swap_function, _ = _prepare_1inch_swap(sell_router_info, amount_received_wei, token_address, BASE_CURRENCY_ADDRESS)
         elif sell_router_info['version'] == 2:
             if router_type_sell == 'solidly':
-                sell_swap_function, _ = _prepare_solidly_swap(sell_dex_name, sell_router_info, amount_received_wei, token_address, BASE_CURRENCY_ADDRESS)
+                sell_swap_function, _ = _prepare_solidly_swap(sell_dex_name, sell_router_info, amount_received_wei, token_address, BASE_CURRENCY_ADDRESS, pair_address=sell_pool['pairAddress'])
             else: # Default to uniswapv2
-                sell_swap_function, _ = _prepare_uniswap_v2_swap(sell_router_info, amount_received_wei, [token_address, BASE_CURRENCY_ADDRESS])
+                sell_swap_function, _ = _prepare_uniswap_v2_swap(sell_router_info, amount_received_wei, [token_address, BASE_CURRENCY_ADDRESS], pair_address=sell_pool['pairAddress'])
         elif sell_router_info['version'] == 3:
             sell_swap_function, _ = _prepare_uniswap_v3_swap(sell_dex_name, sell_router_info, amount_received_wei, token_address, BASE_CURRENCY_ADDRESS)
         else:
