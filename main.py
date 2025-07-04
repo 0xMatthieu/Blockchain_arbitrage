@@ -179,7 +179,6 @@ def main():
             # `LAST_BANNERS_LOG` must already hold one banner string per token.
             # The display order is the order in which the dict was first populated
             # (Python 3.7+ preserves insertion order).
-            """
             banners = list(LAST_BANNERS_LOG.values())
             n = len(banners)
 
@@ -193,7 +192,7 @@ def main():
 
                 # flush so the terminal executes the codes immediately
                 sys.stdout.flush()
-            """
+            
             time.sleep(POLL_INTERVAL)
 
 if __name__ == "__main__":

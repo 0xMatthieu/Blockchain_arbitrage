@@ -418,7 +418,7 @@ def _prepare_uniswap_v3_swap(
         return swap_fn, amount_out_min
     except Exception as e:
         if "revert" in str(e).lower():
-            print("  - ↪ V3 gas estimation reverted. Applying extra slippage buffer and retrying...")
+            print(f"  - ↪ V3 gas estimation reverted: {e}. Applying extra slippage buffer and retrying...")
             # Add a 0.2% additional slippage buffer
             EXTRA_SLIPPAGE_BUFFER = 0.2
             safer_amount_out_min = int(amount_out_wei * (1 - (SLIPPAGE_TOLERANCE_PERCENT + EXTRA_SLIPPAGE_BUFFER) / 100.0))
