@@ -311,6 +311,14 @@ PANCAKE_V3_POOL_ABI = [
         "outputs": [
             {"name": "", "type": "uint128"}
         ]
+    },
+    # ----- fee (selector 0ddf2525) --------------------------------------
+    {
+        "name": "fee",
+        "type": "function",
+        "stateMutability": "view",
+        "inputs": [],
+        "outputs": [{"name": "", "type": "uint24"}]
     }
 ]
 

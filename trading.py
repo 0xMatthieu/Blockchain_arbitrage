@@ -52,9 +52,12 @@ def resilient_rpc_call(callable_func):
                 print(f"  - [RPC] Decoded amountOut: {decoded[0]}")
                 return decoded[0]                     # amountOut (uint256)
 
-            # truly empty revert → raise without retry
-            print(f"  - Contract logic error (revert, no data): {err}")
-            raise err
+            # Empty revert is now retried with back-off.
+            wait = RPC_BACKOFF_FACTOR * (2 ** i)
+            print(f"\n  - [RPC] Contract logic error (empty revert): {err}. Retrying in {wait:.2f}s "
+                  f"({i + 1}/{RPC_MAX_RETRIES})")
+            time.sleep(wait)
+            continue # go to next loop iteration
 
         except Exception as err:
             wait = RPC_BACKOFF_FACTOR * (2 ** i)
