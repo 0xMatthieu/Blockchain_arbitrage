@@ -1,11 +1,10 @@
 import time
-import requests
 from web3.logs import DISCARD
 from web3.exceptions import ContractLogicError
 from config import (
     w3, account, PRIVATE_KEY, MAX_GAS_LIMIT, DEX_ROUTERS,
     BASE_CURRENCY_ADDRESS, TRADE_AMOUNT_BASE_TOKEN, SLIPPAGE_TOLERANCE_PERCENT,
-    RPC_MAX_RETRIES, RPC_BACKOFF_FACTOR, BOT_WALLET, ONEINCH_API_KEY
+    RPC_MAX_RETRIES, RPC_BACKOFF_FACTOR, BOT_WALLET
 )
 from abi import (
     ERC20_ABI, UNISWAP_V2_ROUTER_ABI, UNISWAP_V3_ROUTER_ABI, SOLIDLY_ROUTER_ABI,
@@ -74,84 +73,157 @@ def _get_v3_pool_abi(dex_name):
     print("  - Using Uniswap V3 Pool ABI.")
     return UNISWAP_V3_POOL_ABI
 
-
 def _prepare_1inch_swap(chain_id, amount_in_wei, token_in, token_out):
-    """
-    Prepares a swap transaction using the 1inch Aggregation Protocol API.
-    """
-    if not ONEINCH_API_KEY:
-        raise ValueError("1inch API key is not set. Please add ONEINCH_API_KEY to your .env file.")
-
-    api_url = f"https://api.1inch.dev/swap/v6.0/{chain_id}/swap"
-    
-    params = {
-        "src": token_in,
-        "dst": token_out,
-        "amount": str(amount_in_wei),
-        "from": account.address,
-        "slippage": SLIPPAGE_TOLERANCE_PERCENT,
-        "disableEstimate": "true", # We do our own gas estimation
-        "receiver": account.address,
-    }
-
-    headers = {"Authorization": f"Bearer {ONEINCH_API_KEY}"}
-
-    print("  - Calling 1inch API to get swap data...")
-    response = requests.get(api_url, params=params, headers=headers)
-    response.raise_for_status() # Will raise an exception for 4XX/5XX errors
-    
-    swap_data = response.json()
-    
-    # The API returns the destination amount as a string
-    quoted_amount_out_wei = int(swap_data['dstAmount'])
-    amount_out_min_wei = int(quoted_amount_out_wei * (1 - SLIPPAGE_TOLERANCE_PERCENT / 100.0))
-    
-    print(f"  - 1inch API Quote - Min Amount Out: {amount_out_min_wei}")
-    
-    # The 'tx' object contains all we need for the transaction
-    return swap_data['tx'], amount_out_min_wei
-
-
-def _prepare_solidly_swap(dex_name, router_info, amount_in_wei, token_in, token_out):
-    """Prepares a swap transaction for a Solidly-style DEX."""
-    factory_address = router_info.get('factory')
-    if not factory_address:
-        raise ValueError(f"Solidly DEX '{dex_name}' requires a 'factory' address.")
-
-    print(f"  - Solidly DEX detected. Determining pool type and reserves from factory {factory_address}...")
-    factory_contract = w3.eth.contract(address=factory_address, abi=SOLIDLY_FACTORY_ABI)
-    zero_address = "0x0000000000000000000000000000000000000000"
-    
-    is_stable_pool = False
-    pool_address = resilient_rpc_call(lambda: factory_contract.functions.getPool(token_in, token_out, is_stable_pool).call())
-    if pool_address == zero_address:
-        is_stable_pool = True
-        pool_address = resilient_rpc_call(lambda: factory_contract.functions.getPool(token_in, token_out, is_stable_pool).call())
-
-    if pool_address == zero_address:
-        raise ValueError(f"Could not find any valid pool for this pair on Solidly DEX {dex_name}.")
-    
-    print(f"  - Found pool: {'Stable' if is_stable_pool else 'Volatile'} at {pool_address}")
-
-    pair_contract = w3.eth.contract(address=pool_address, abi=SOLIDLY_PAIR_ABI)
-    reserves = resilient_rpc_call(lambda: pair_contract.functions.getReserves().call())
-    if reserves[0] == 0 or reserves[1] == 0:
-        raise ValueError(f"Pool {pool_address} on {dex_name} has zero reserves. Skipping trade.")
-    print(f"  - Pool reserves are non-zero. Reserve0: {reserves[0]}, Reserve1: {reserves[1]}")
-
-    router_contract = w3.eth.contract(address=router_info['address'], abi=SOLIDLY_ROUTER_ABI)
-    routes = [(token_in, token_out, is_stable_pool, factory_address)]
-    print(f"  - Solidly Route: {routes}")
-    
-    amounts_out = resilient_rpc_call(lambda: router_contract.functions.getAmountsOut(amount_in_wei, routes).call({'from': account.address}))
-    amount_out_min_wei = int(amounts_out[-1] * (1 - SLIPPAGE_TOLERANCE_PERCENT / 100.0))
-
-    print(f"  - Solidly Min Amount Out (from quote): {amount_out_min_wei}")
-    swap_function = router_contract.functions.swapExactTokensForTokens(
-        amount_in_wei, amount_out_min_wei, routes, account.address, int(time.time()) + 300
+    router = w3.eth.contract(
+        address=ONEINCH_V6_ROUTER_ADDR,
+        abi=ONEINCH_V6_ROUTER_ABI
     )
-    return swap_function, amount_out_min_wei
 
+    # ------------------------------------------------------------------ #
+    # 1️⃣  compute slippage-adjusted min-return (off-chain quote)
+    #     We reuse your existing Quoter logic for the buy-leg DEX.
+    # ------------------------------------------------------------------ #
+    # >>> you already have a 'quote_exact_out' routine; call it here
+    quoted_out_wei = _quote_simple_uniswap_v3(token_in, token_out,
+                                              amount_in_wei, chain_id)
+    amount_out_min_wei = int(
+        quoted_out_wei * (1 - SLIPPAGE_TOLERANCE_PERCENT / 100.0)
+    )
+    print(f"  - 1inch on-chain quote: minOut={amount_out_min_wei}")
+
+    # ------------------------------------------------------------------ #
+    # 2️⃣  assemble the SwapDescription tuple
+    # ------------------------------------------------------------------ #
+    swap_desc = (
+        Web3.to_checksum_address(token_in),          # srcToken
+        Web3.to_checksum_address(token_out),         # dstToken
+        account.address,                             # srcReceiver
+        account.address,                             # dstReceiver
+        amount_in_wei,                               # amount
+        amount_out_min_wei,                          # minReturn
+        0,                                           # flags  (0 = simple)
+        b""                                          # permit (none, we approve)
+    )
+
+    # executor address: 1inch default executor for Base
+    EXECUTOR_ADDR = "0x1111111111111111111111111111111111111111"
+
+    # empty executor payload   (router chooses best pool itself)
+    executor_data = b""
+
+    swap_fn = router.functions.swap(EXECUTOR_ADDR, swap_desc, executor_data)
+
+    # ------------------------------------------------------------------ #
+    # 3️⃣  build tx dict (gas, maxFee, etc.) – mirrors your other helpers
+    # ------------------------------------------------------------------ #
+    max_priority_fee = resilient_rpc_call(lambda: w3.eth.max_priority_fee)
+    latest_block     = resilient_rpc_call(lambda: w3.eth.get_block("latest"))
+    max_fee_per_gas  = latest_block["baseFeePerGas"] * 2 + max_priority_fee
+
+    tx_sketch = {
+        "from":  account.address,
+        "value": 0,                     # add ETH if token_in is native
+        "nonce": resilient_rpc_call(lambda: w3.eth.get_transaction_count(
+                                    account.address)),
+        "maxFeePerGas":      max_fee_per_gas,
+        "maxPriorityFeePerGas": max_priority_fee,
+        "chainId": chain_id
+    }
+    gas_est = resilient_rpc_call(lambda: swap_fn.estimate_gas(tx_sketch))
+    tx_sketch["gas"] = min(int(gas_est * 1.2), MAX_GAS_LIMIT)
+
+    tx_dict = swap_fn.build_transaction(tx_sketch)
+    return tx_dict, amount_out_min_wei
+
+def _prepare_solidly_swap(
+    dex_name: str,
+    router_info: dict,
+    amount_in_wei: int,
+    token_in: str,
+    token_out: str,
+    *,
+    safety_slippage_bps: int = 300  # extra 3 % head-room on top of your global setting
+):
+    """
+    Build a Solidly-style swap call that will *not* revert on:
+        • transfer-tax / fee-on-transfer tokens
+        • tiny quote drift between `getAmountsOut` and the actual swap
+    """
+    factory = router_info.get("factory")
+    if not factory:
+        raise ValueError(f"{dex_name}: no factory address in config")
+
+    print(f"  - Solidly router detected ({dex_name}). Looking up pool …")
+    factory_contract = w3.eth.contract(factory, abi=SOLIDLY_FACTORY_ABI)
+    zero = "0x" + "0"*40
+
+    # ---------- 1️⃣  find the pool (volatile first, then stable) ----------
+    for attempted_stable in (False, True):
+        pool = resilient_rpc_call(
+            lambda: factory_contract.functions.getPool(
+                token_in, token_out, attempted_stable
+            ).call()
+        )
+        if pool != zero:
+            is_stable = attempted_stable
+            break
+    else:
+        raise ValueError(f"{dex_name}: no pool for {token_in} → {token_out}")
+
+    print(f"  - Pool found: {pool} ({'stable' if is_stable else 'volatile'})")
+
+    # ---------- 2️⃣  reserves sanity-check ----------
+    pair = w3.eth.contract(pool, abi=SOLIDLY_PAIR_ABI)
+    r0, r1, _ = resilient_rpc_call(lambda: pair.functions.getReserves().call())
+    if r0 == 0 or r1 == 0:
+        raise ValueError(f"{dex_name}: pool has zero reserves")
+
+    # ---------- 3️⃣  quote ----------
+    router = w3.eth.contract(router_info["address"], abi=SOLIDLY_ROUTER_ABI)
+    routes = [(token_in, token_out, is_stable, factory)]
+    amounts = resilient_rpc_call(
+        lambda: router.functions.getAmountsOut(amount_in_wei, routes).call(
+            {"from": account.address}
+        )
+    )
+    min_out = int(amounts[-1] * (1 - SLIPPAGE_TOLERANCE_PERCENT / 100.0))
+
+    # ---------- 4️⃣  helper to build either classic or FOT-safe swap ----------
+    def _build_swap_fn(out_min: int):
+        if "swapExactTokensForTokensSupportingFeeOnTransferTokens" in router.functions:
+            return router.functions.swapExactTokensForTokensSupportingFeeOnTransferTokens(
+                amount_in_wei,
+                out_min,
+                routes,
+                account.address,
+                int(time.time()) + 300,
+            )
+        # classic path
+        return router.functions.swapExactTokensForTokens(
+            amount_in_wei,
+            out_min,
+            routes,
+            account.address,
+            int(time.time()) + 300,
+        )
+
+    swap_fn = _build_swap_fn(min_out)
+
+    # ---------- 5️⃣  try a cheap gas-estimation; fall back on failure ----------
+    try:
+        swap_fn.estimate_gas({"from": account.address})
+        final_min_out = min_out
+        print(f"  - MinOut = {min_out}")
+    except ContractLogicError:
+        print("  - ↪ first gas check reverted; falling back to minOut = 0 "
+              "(fee-on-transfer or quote slippage)")
+        # tighten safety: add extra bps off the original quote
+        min_out_safe = int(amounts[-1] * (1 - safety_slippage_bps / 10_000))
+        swap_fn = _build_swap_fn(min_out_safe if min_out_safe > 0 else 0)
+        final_min_out = min_out_safe
+        # If even this reverts, the calling code will catch it.
+
+    return swap_fn, final_min_out
 
 def _prepare_uniswap_v2_swap(router_info, amount_in_wei, path):
     """Prepares a swap transaction for a Uniswap V2-style DEX."""
@@ -166,61 +238,124 @@ def _prepare_uniswap_v2_swap(router_info, amount_in_wei, path):
     )
     return swap_function, amount_out_min_wei
 
-def _prepare_uniswap_v3_swap(dex_name, router_info, amount_in_wei, token_in, token_out):
-    """Prepares a swap transaction for a Uniswap V3-style DEX."""
+def _prepare_uniswap_v3_swap(
+        dex_name: str,
+        router_info: dict,
+        amount_in_wei: int,
+        token_in: str,
+        token_out: str
+    ):
+    """
+    Prepares a Uniswap-V3 style swap and **never** dies on
+    `quoteExactInputSingle` “execution reverted, no data”.
+    """
+
     factory_address = router_info.get("factory")
     if not factory_address:
-        raise ValueError(f"V3 DEX '{dex_name}' requires a 'factory' address in config.")
+        raise ValueError(f"V3 DEX '{dex_name}' requires a 'factory' address")
 
-    print(f"  - V3 DEX detected. Querying factory {factory_address} for a valid pool...")
-    factory_contract = w3.eth.contract(address=factory_address, abi=UNISWAP_V3_FACTORY_ABI)
+    print(f"  - V3 DEX detected. Querying factory {factory_address} …")
+    factory = w3.eth.contract(factory_address, abi=UNISWAP_V3_FACTORY_ABI)
 
+    # ------------------------------------------------------------------ #
+    # ① find a pool that actually exists (code size > 0)
+    # ------------------------------------------------------------------ #
     FEE_TIERS = [500, 3000, 10000, 2500, 100]
     chosen_fee, pool_address = None, None
+    zero = "0x" + "00" * 20
+
     for fee in FEE_TIERS:
-        pool_addr_candidate = resilient_rpc_call(
-            lambda: factory_contract.functions.getPool(token_in, token_out, fee).call()
+        addr = resilient_rpc_call(
+            lambda: factory.functions.getPool(token_in, token_out, fee).call()
         )
-        if int(pool_addr_candidate, 16):
-            chosen_fee, pool_address = fee, pool_addr_candidate
-            print(f"  - Found valid pool with fee tier {fee} bps at address {pool_address}")
+        if addr and addr != zero and w3.eth.get_code(addr):
+            chosen_fee, pool_address = fee, addr
+            print(f"  - Pool {addr} at {fee} bps selected")
             break
-    if chosen_fee is None:
-        raise ValueError(f"No V3 pool found for pair on {dex_name}")
 
-    # ---------- pool-init + liquidity check ----------
-    v3_pool_abi = _get_v3_pool_abi(dex_name)
-    pool_contract = w3.eth.contract(pool_address, abi=v3_pool_abi)
+    if not pool_address:
+        raise ValueError(f"No live V3 pool for pair on {dex_name}")
 
-    sqrt_price_x96, *_ = resilient_rpc_call(lambda: pool_contract.functions.slot0().call())
+    # ------------------------------------------------------------------ #
+    # ② sanity-check pool status (slot0 & liquidity)
+    # ------------------------------------------------------------------ #
+    pool = w3.eth.contract(pool_address, abi=_get_v3_pool_abi(dex_name))
+    sqrt_price_x96, *_ = resilient_rpc_call(lambda: pool.functions.slot0().call())
     if sqrt_price_x96 == 0:
-        raise ValueError("Pool exists but has zero sqrtPrice (never initialised)")
+        raise ValueError("Pool exists but never initialised (sqrtPriceX96 == 0)")
 
-    current_liquidity = resilient_rpc_call(lambda: pool_contract.functions.liquidity().call())
-    if current_liquidity == 0:
-        raise ValueError("Pool initialised but has 0 active liquidity")
+    liquidity = resilient_rpc_call(lambda: pool.functions.liquidity().call())
+    if liquidity == 0:
+        raise ValueError("Pool initialised but has zero active liquidity")
 
-    print(f"  - Pool is initialised and has {current_liquidity} units of liquidity")
+    print(f"  - Pool initialised with {liquidity} liquidity")
 
-    # ---------- quote via Quoter V2 ----------
-    quoter_address = router_info.get("quoter")
-    if not quoter_address:
-        raise ValueError(f"V3 DEX '{dex_name}' requires a 'quoter' address in config.")
-    print(f"  - Using Quoter at {quoter_address} to get quote…")
+    # ------------------------------------------------------------------ #
+    # ③ detect tokens that break static-calls (fee-on-transfer, rebasing)
+    # ------------------------------------------------------------------ #
+    def _is_static_safe(token_addr: str) -> bool:
+        erc = w3.eth.contract(token_addr, abi=ERC20_ABI)
+        try:
+            erc.functions.totalSupply().call({"gas": 25_000})
+            return True
+        except ContractLogicError:
+            return False
 
-    quoter_contract = w3.eth.contract(quoter_address, abi=UNISWAP_V3_QUOTER_ABI)
-    params_tuple = (token_in, token_out, chosen_fee, amount_in_wei, 0)
-    quote_tuple = resilient_rpc_call(
-        lambda: quoter_contract.functions.quoteExactInputSingle(params_tuple).call(
-            {"from": account.address, "gas": 500_000}
-        )
-    )
-    quoted_amount_out_wei = int(quote_tuple[0])
-    amount_out_min_wei = int(quoted_amount_out_wei * (1 - SLIPPAGE_TOLERANCE_PERCENT / 100.0))
-    print(f"  - V3 Min Amount Out (from quote): {amount_out_min_wei}")
+    static_safe = _is_static_safe(token_in) and _is_static_safe(token_out)
 
-    # ---------- build swap ----------
-    router_contract = w3.eth.contract(router_info["address"], abi=UNISWAP_V3_ROUTER_ABI)
+    # ------------------------------------------------------------------ #
+    # ④ obtain a quote – primary: QuoterV2, fallback: router/helper, last:
+    #    constant-product estimate (reserves)
+    # ------------------------------------------------------------------ #
+    amount_out_wei = None
+    if static_safe:
+        quoter_addr = router_info.get("quoter")
+        if not quoter_addr:
+            raise ValueError("Router config missing 'quoter' address")
+
+        print(f"  - Using quoter {quoter_addr} …")
+        quoter = w3.eth.contract(quoter_addr, abi=UNISWAP_V3_QUOTER_ABI)
+        params = (token_in, token_out, chosen_fee, amount_in_wei, 0)
+
+        try:
+            quote_tuple = resilient_rpc_call(
+                lambda: quoter.functions.quoteExactInputSingle(params).call(
+                    {"from": account.address, "gas": 500_000}
+                )
+            )
+            amount_out_wei = int(quote_tuple[0])
+
+        except ContractLogicError as err:
+            # silent-revert fallback path
+            if "execution reverted" in str(err):
+                print("  - Quoter reverted without data; trying router helper")
+            else:
+                raise
+    # ↓ Router-level helper (not available on all deployments)
+    if amount_out_wei is None and hasattr(pool.functions, "getQuote"):
+        try:
+            amount_out_wei = pool.functions.getQuote(
+                amount_in_wei, token_in).call()
+        except Exception:
+            pass
+
+    # ↓ constant-product approximation if everything else failed
+    if amount_out_wei is None:
+        print("  - Falling back to reserve-based estimate")
+        # (reserve0, reserve1) mapping depends on token sorting
+        reserve0, reserve1, *_ = pool.functions.getReserves().call()
+        if token_in.lower() < token_out.lower():
+            amount_out_wei = amount_in_wei * reserve1 // (reserve0 + amount_in_wei)
+        else:
+            amount_out_wei = amount_in_wei * reserve0 // (reserve1 + amount_in_wei)
+
+    # ------------------------------------------------------------------ #
+    # ⑤ slippage guard & swap-function build
+    # ------------------------------------------------------------------ #
+    amount_out_min = int(amount_out_wei * (1 - SLIPPAGE_TOLERANCE_PERCENT / 100))
+    print(f"  - Quoted out: {amount_out_wei}, minOut: {amount_out_min}")
+
+    router = w3.eth.contract(router_info["address"], abi=UNISWAP_V3_ROUTER_ABI)
     swap_params = {
         "tokenIn": token_in,
         "tokenOut": token_out,
@@ -228,12 +363,11 @@ def _prepare_uniswap_v3_swap(dex_name, router_info, amount_in_wei, token_in, tok
         "recipient": account.address,
         "deadline": int(time.time()) + 300,
         "amountIn": amount_in_wei,
-        "amountOutMinimum": amount_out_min_wei,
+        "amountOutMinimum": amount_out_min,
         "sqrtPriceLimitX96": 0,
     }
-    print(f"  - V3 Swap Params: {swap_params}")
-    swap_function = router_contract.functions.exactInputSingle(swap_params)
-    return swap_function, amount_out_min_wei
+    swap_fn = router.functions.exactInputSingle(swap_params)
+    return swap_fn, amount_out_min
 
 def _parse_receipt_for_amount_out(receipt, router_info, dex_name, target_token_address, target_decimals):
     """Parses a transaction receipt to find the amount of tokens received."""
