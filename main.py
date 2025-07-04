@@ -175,30 +175,23 @@ def main():
                 time.sleep(POLL_INTERVAL_ERROR)
             
             # --- Display Banners ---
-            """
-            Overwrite the previous banner block in-place.
-
-            `LAST_BANNERS_LOG` must already hold one banner string per token.
-            The display order is the order in which the dict was first populated
-            (Python 3.7+ preserves insertion order).
-            """
-            """
+            # Overwrite the previous banner block in-place.
+            # `LAST_BANNERS_LOG` must already hold one banner string per token.
+            # The display order is the order in which the dict was first populated
+            # (Python 3.7+ preserves insertion order).
             banners = list(LAST_BANNERS_LOG.values())
             n = len(banners)
 
-            if n == 0:
-                return  # nothing to draw yet
+            if n > 0:
+                # move cursor UP n lines AND to column-0  (ESC[{n}F)
+                sys.stdout.write(f"\033[{n}F")
 
-            # move cursor UP n lines AND to column-0  (ESC[{n}F)
-            sys.stdout.write(f"\033[{n}F")
+                # rewrite each line;  \r ensures column-0, \033[K clears leftovers
+                for line in banners:
+                    sys.stdout.write(f"\r{line}\033[K\n")
 
-            # rewrite each line;  \r ensures column-0, \033[K clears leftovers
-            for line in banners:
-                sys.stdout.write(f"\r{line}\033[K\n")
-
-            # flush so the terminal executes the codes immediately
-            sys.stdout.flush()
-            """
+                # flush so the terminal executes the codes immediately
+                sys.stdout.flush()
 
             time.sleep(POLL_INTERVAL)
 

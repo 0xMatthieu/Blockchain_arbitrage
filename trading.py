@@ -367,24 +367,55 @@ def _prepare_uniswap_v3_swap(
         raise ValueError("All V3 quote methods failed (Quoter, router helper). Cannot proceed.")
 
     # ------------------------------------------------------------------ #
-    # ⑤ slippage guard & swap-function build
+    # ⑤ slippage guard, swap-function build, and gas estimation check
     # ------------------------------------------------------------------ #
-    amount_out_min = int(amount_out_wei * (1 - SLIPPAGE_TOLERANCE_PERCENT / 100))
+    amount_out_min = int(amount_out_wei * (1 - SLIPPAGE_TOLERANCE_PERCENT / 100.0))
     print(f"  - Quoted out: {amount_out_wei}, minOut: {amount_out_min}")
 
     router = w3.eth.contract(router_info["address"], abi=UNISWAP_V3_ROUTER_ABI)
-    swap_params = {
-        "tokenIn": token_in,
-        "tokenOut": token_out,
-        "fee": chosen_fee,
-        "recipient": account.address,
-        "deadline": int(time.time()) + 300,
-        "amountIn": amount_in_wei,
-        "amountOutMinimum": amount_out_min,
-        "sqrtPriceLimitX96": 0,
-    }
-    swap_fn = router.functions.exactInputSingle(swap_params)
-    return swap_fn, amount_out_min
+
+    def _build_v3_swap_fn(min_out):
+        swap_params = {
+            "tokenIn": token_in,
+            "tokenOut": token_out,
+            "fee": chosen_fee,
+            "recipient": account.address,
+            "deadline": int(time.time()) + 300,
+            "amountIn": amount_in_wei,
+            "amountOutMinimum": min_out,
+            "sqrtPriceLimitX96": 0,
+        }
+        return router.functions.exactInputSingle(swap_params)
+
+    swap_fn = _build_v3_swap_fn(amount_out_min)
+
+    # Final check: can we estimate gas for this swap? It's the most reliable
+    # way to see if the router will accept it.
+    try:
+        resilient_rpc_call(lambda: swap_fn.estimate_gas({"from": account.address}))
+        return swap_fn, amount_out_min
+    except Exception as e:
+        if "revert" in str(e).lower():
+            print("  - ↪ V3 gas estimation reverted. Applying extra slippage buffer and retrying...")
+            # Add a 0.2% additional slippage buffer
+            EXTRA_SLIPPAGE_BUFFER = 0.2
+            safer_amount_out_min = int(amount_out_wei * (1 - (SLIPPAGE_TOLERANCE_PERCENT + EXTRA_SLIPPAGE_BUFFER) / 100.0))
+            
+            if safer_amount_out_min == amount_out_min:
+                 print("  - ↪ Could not apply slippage buffer (trade too small). Aborting.")
+                 raise ValueError("V3 gas estimation failed, slippage buffer could not be applied.") from e
+
+            swap_fn = _build_v3_swap_fn(safer_amount_out_min)
+            try:
+                resilient_rpc_call(lambda: swap_fn.estimate_gas({"from": account.address}))
+                print(f"  - Gas estimation with buffer successful. New minOut: {safer_amount_out_min}")
+                return swap_fn, safer_amount_out_min
+            except Exception as e2:
+                print("  - ↪ V3 gas estimation FAILED even with buffer. Swap would likely fail.")
+                raise ValueError("V3 swap would fail, even with slippage buffer.") from e2
+        else:
+            # Re-raise other exceptions (e.g., RPC node down)
+            raise e
 
 def _parse_receipt_for_amount_out(receipt, router_info, dex_name, target_token_address, target_decimals):
     """Parses a transaction receipt to find the amount of tokens received."""
