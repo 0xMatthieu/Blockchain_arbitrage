@@ -9,7 +9,8 @@ from config import (
 from abi import (
     ERC20_ABI, UNISWAP_V2_ROUTER_ABI, UNISWAP_V3_ROUTER_ABI, SOLIDLY_ROUTER_ABI,
     SOLIDLY_FACTORY_ABI, UNISWAP_V3_POOL_ABI, UNISWAP_V3_FACTORY_ABI, SOLIDLY_PAIR_ABI,
-    UNISWAP_V3_QUOTER_ABI, PANCAKE_V3_POOL_ABI, ONEINCH_V6_ROUTER_ABI
+    UNISWAP_V3_QUOTER_ABI, PANCAKE_V3_POOL_ABI, ONEINCH_V6_ROUTER_ABI,
+    ALIEN_BASE_ROUTER_ABI, ALIEN_BASE_V3_POOL_ABI, ALIEN_BASE_V3_FACTORY_ABI
 )
 from dex_utils import find_router_info
 
@@ -221,6 +222,95 @@ def _prepare_solidly_swap(
     # Gas estimation checks removed by user request.
     print(f"  - MinOut = {min_out}")
     return swap_fn, min_out
+
+def _prepare_alien_base_swap(
+        dex_name: str,
+        router_info: dict,
+        amount_in_wei: int,
+        token_in: str,
+        token_out: str,
+        pair_address: str = None
+    ):
+    """
+    Prepares an Alien Base (Uniswap-V3 fork) style swap.
+    It does not use a quoter and sets amountOutMinimum to 0.
+    """
+
+    factory_address = router_info.get("factory")
+    if not factory_address:
+        raise ValueError(f"V3 DEX '{dex_name}' requires a 'factory' address")
+
+    print(f"  - Alien Base V3 DEX detected. Querying factory {factory_address} …")
+    factory = w3.eth.contract(factory_address, abi=ALIEN_BASE_V3_FACTORY_ABI)
+
+    # ------------------------------------------------------------------ #
+    # ① find a pool that actually exists (code size > 0)
+    # ------------------------------------------------------------------ #
+    chosen_fee, pool_address = None, None
+    
+    if pair_address and w3.eth.get_code(pair_address):
+        print(f"  - Using provided pool address: {pair_address}")
+        pool_contract = w3.eth.contract(address=pair_address, abi=ALIEN_BASE_V3_POOL_ABI)
+        try:
+            # Confirm fee tier directly from the provided pool
+            chosen_fee = resilient_rpc_call(lambda: pool_contract.functions.fee().call())
+            pool_address = pair_address
+            print(f"  - Successfully confirmed pool at fee tier {chosen_fee} bps.")
+        except Exception as e:
+            print(f"  - WARN: Could not confirm fee for provided pool {pair_address}. Falling back to factory search. Error: {e}")
+
+    if not pool_address:
+        print(f"  - No valid pool provided. Querying factory {factory_address} for a pool...")
+        FEE_TIERS = [500, 3000, 10000, 2500, 100]
+        zero = "0x" + "00" * 20
+        for fee in FEE_TIERS:
+            addr = resilient_rpc_call(
+                lambda: factory.functions.getPool(token_in, token_out, fee).call()
+            )
+            if addr and addr != zero and w3.eth.get_code(addr):
+                chosen_fee, pool_address = fee, addr
+                print(f"  - Pool {addr} at {fee} bps selected")
+                break
+
+    if not pool_address:
+        raise ValueError(f"No live V3 pool for pair on {dex_name}")
+
+    # ------------------------------------------------------------------ #
+    # ② sanity-check pool status (slot0 & liquidity)
+    # ------------------------------------------------------------------ #
+    pool = w3.eth.contract(pool_address, abi=ALIEN_BASE_V3_POOL_ABI)
+    sqrt_price_x96, *_ = resilient_rpc_call(lambda: pool.functions.slot0().call())
+    if sqrt_price_x96 == 0:
+        raise ValueError("Pool exists but never initialised (sqrtPriceX96 == 0)")
+
+    liquidity = resilient_rpc_call(lambda: pool.functions.liquidity().call())
+    if liquidity == 0:
+        raise ValueError("Pool initialised but has zero active liquidity")
+
+    print(f"  - Pool initialised with {liquidity} liquidity")
+
+    amount_out_min = 0
+
+    router = w3.eth.contract(router_info["address"], abi=ALIEN_BASE_ROUTER_ABI)
+
+    def _build_v3_swap_fn(min_out):
+        swap_params = {
+            "tokenIn": token_in,
+            "tokenOut": token_out,
+            "fee": chosen_fee,
+            "recipient": account.address,
+            "deadline": int(time.time()) + 300,
+            "amountIn": amount_in_wei,
+            "amountOutMinimum": min_out,
+            "sqrtPriceLimitX96": 0,
+        }
+        return router.functions.exactInputSingle(swap_params)
+
+    print(f"  - Prepare swap")
+    swap_fn = _build_v3_swap_fn(amount_out_min)
+
+    # Gas estimation checks removed by user request.
+    return swap_fn, amount_out_min
 
 def _prepare_uniswap_v2_swap(router_info, amount_in_wei, path, pair_address: str = None):
     """Prepares a swap transaction for a Uniswap V2-style DEX."""
@@ -439,6 +529,8 @@ def execute_trade(buy_pool, sell_pool, spread, token_address):
         swap_function = None
         if router_type == '1inch':
             swap_function, _ = _prepare_1inch_swap(buy_router_info, amount_in_wei, BASE_CURRENCY_ADDRESS, token_address)
+        elif router_type == 'alienbase':
+            swap_function, _ = _prepare_alien_base_swap(buy_dex_name, buy_router_info, amount_in_wei, BASE_CURRENCY_ADDRESS, token_address, pair_address=buy_pool['pairAddress'])
         elif buy_router_info['version'] == 2:
             if router_type == 'solidly':
                 swap_function, _ = _prepare_solidly_swap(buy_dex_name, buy_router_info, amount_in_wei, BASE_CURRENCY_ADDRESS, token_address, pair_address=buy_pool['pairAddress'])
@@ -489,6 +581,8 @@ def execute_trade(buy_pool, sell_pool, spread, token_address):
         sell_swap_function = None
         if router_type_sell == '1inch':
             sell_swap_function, _ = _prepare_1inch_swap(sell_router_info, amount_received_wei, token_address, BASE_CURRENCY_ADDRESS)
+        elif router_type_sell == 'alienbase':
+            sell_swap_function, _ = _prepare_alien_base_swap(sell_dex_name, sell_router_info, amount_received_wei, token_address, BASE_CURRENCY_ADDRESS, pair_address=sell_pool['pairAddress'])
         elif sell_router_info['version'] == 2:
             if router_type_sell == 'solidly':
                 sell_swap_function, _ = _prepare_solidly_swap(sell_dex_name, sell_router_info, amount_received_wei, token_address, BASE_CURRENCY_ADDRESS, pair_address=sell_pool['pairAddress'])

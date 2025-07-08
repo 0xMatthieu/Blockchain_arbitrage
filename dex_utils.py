@@ -4,7 +4,7 @@ from abi import ERC20_ABI
 
 def find_router_info(dex_id, routers):
     """Finds a router's info with robust matching, preferring higher versions."""
-    dex_id = dex_id.lower().strip()
+    dex_id = dex_id.lower().strip().replace('-', '_')
     
     possible_matches = []
     for key, info in routers.items():
