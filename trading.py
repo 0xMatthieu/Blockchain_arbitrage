@@ -67,9 +67,9 @@ def _get_v3_pool_abi(dex_name):
 def _prepare_1inch_swap(router_info: dict, amount_in_wei: int, token_in: str, token_out: str):
     """
     Prepares a swap transaction for the 1inch Aggregation router using on-chain calls.
-    This function simulates the swap to get a quote, then builds the real transaction.
+    Sets minReturn to 0 for maximum speed, skipping quotes.
     """
-    print("  - Preparing 1inch on-chain swap...")
+    print("  - Preparing 1inch on-chain swap (fast mode)...")
     router = w3.eth.contract(address=router_info['address'], abi=ONEINCH_V6_ROUTER_ABI)
 
     # 1inch default executor for Base network.
@@ -78,48 +78,18 @@ def _prepare_1inch_swap(router_info: dict, amount_in_wei: int, token_in: str, to
     # Empty data, so the executor tries to find the best route.
     executor_data = b""
 
-    # --- Step 1: Simulate the swap to get a quote ---
-    # We need a quote to calculate minReturn, but the router has no getAmountsOut.
-    # So, we build a "probe" transaction with minReturn=1 and simulate it.
-    print("  - Simulating swap to get on-chain quote...")
-    probe_desc = (
+    amount_out_min_wei = 0
+    print(f"  - 1inch Min Amount Out: 0 (fast mode)")
+
+    final_desc = (
         token_in,           # srcToken
         token_out,          # dstToken
         account.address,    # srcReceiver (will be ignored by router, but needs to be valid addr)
         account.address,    # dstReceiver
         amount_in_wei,      # amount
-        1,                  # minReturn (probe value)
+        amount_out_min_wei, # minReturn
         0,                  # flags (0 = simple)
         b""                 # permit (none)
-    )
-    
-    probe_swap_fn = router.functions.swap(EXECUTOR_ADDR, probe_desc, executor_data)
-    
-    try:
-        # .call() simulates the transaction. No value is sent as we use WETH, not native ETH.
-        call_params = {'from': account.address}
-        quoted_amounts = resilient_rpc_call(lambda: probe_swap_fn.call(call_params))
-        quoted_amount_out_wei = quoted_amounts[0] # returnAmount
-    except Exception as e:
-        print(f"  - 1inch quote simulation failed: {e}")
-        raise ValueError("Could not get on-chain quote from 1inch router.") from e
-
-    if quoted_amount_out_wei == 0:
-        raise ValueError("1inch on-chain quote returned 0 amount out.")
-
-    # --- Step 2: Build the real swap function with proper slippage ---
-    amount_out_min_wei = int(quoted_amount_out_wei * (1 - SLIPPAGE_TOLERANCE_PERCENT / 100.0))
-    print(f"  - 1inch On-chain Quote: {quoted_amount_out_wei}, Min Amount Out: {amount_out_min_wei}")
-
-    final_desc = (
-        token_in,
-        token_out,
-        account.address,
-        account.address,
-        amount_in_wei,
-        amount_out_min_wei, # Use the properly calculated minReturn
-        0,
-        b""
     )
 
     swap_function = router.functions.swap(EXECUTOR_ADDR, final_desc, executor_data)
@@ -137,68 +107,28 @@ def _prepare_solidly_swap(
     safety_slippage_bps: int = 300  # extra 3 % head-room on top of your global setting
 ):
     """
-    Build a Solidly-style swap call that will *not* revert on:
-        • transfer-tax / fee-on-transfer tokens
-        • tiny quote drift between `getAmountsOut` and the actual swap
+    Build a Solidly-style swap call.
+    This version skips quotes and assumes a volatile pool for speed.
     """
     factory = router_info.get("factory")
     if not factory:
         raise ValueError(f"{dex_name}: no factory address in config")
 
-    print(f"  - Solidly router detected ({dex_name}).")
+    print(f"  - Solidly router detected ({dex_name}) (fast mode).")
     
     if not pair_address or not w3.eth.get_code(pair_address):
         raise ValueError(f"{dex_name}: No valid pair_address provided for solidly swap.")
     
-    pool = pair_address
-    print(f"  - Using provided pool address: {pool}")
+    print(f"  - Using provided pool address: {pair_address}")
     
-    # Solidly routes require knowing if a pool is stable. We can't know for sure without a factory call,
-    # so we will probe both possibilities. The router will reject the wrong one.
-    is_stable = False # Assume volatile by default, most common case.
-    # Note: A more robust implementation might call `getReserves` on the pair and try to infer stability,
-    # but for now, we assume volatile, which is generally safer.
+    # For speed, we assume the pool is volatile. This is the most common case.
+    # The transaction may fail if the pool is stable.
+    final_is_stable = False
+    min_out = 0
 
-    # ---------- 2️⃣  reserves sanity-check ----------
-    pair = w3.eth.contract(pool, abi=SOLIDLY_PAIR_ABI)
-    r0, r1, _ = resilient_rpc_call(lambda: pair.functions.getReserves().call())
-    print(f"  - On-chain reserves: r0={r0}, r1={r1}")
-    if r0 == 0 or r1 == 0:
-        raise ValueError(f"{dex_name}: pool has zero reserves")
-
-    # ---------- 3️⃣  quote ----------
     router = w3.eth.contract(router_info["address"], abi=SOLIDLY_ROUTER_ABI)
     
-    amounts = None
-    final_is_stable = False
-    
-    # Try quoting first as a volatile pool, then as a stable pool if that fails.
-    for is_stable_try in [False, True]:
-        try:
-            routes = [(token_in, token_out, is_stable_try, factory)]
-            amounts = resilient_rpc_call(
-                lambda: router.functions.getAmountsOut(amount_in_wei, routes).call(
-                    {"from": account.address}
-                )
-            )
-            final_is_stable = is_stable_try
-            print(f"  - Successfully quoted as {'stable' if is_stable_try else 'volatile'} pool.")
-            break # Exit loop on success
-        except Exception as e:
-            if "revert" in str(e).lower():
-                print(f"  - Quote as {'stable' if is_stable_try else 'volatile'} failed. Trying other type...")
-                continue # Try the next stability type
-            else:
-                raise # Re-raise unexpected errors
-
-    if amounts is None:
-        raise ValueError(f"{dex_name}: Could not get quote for pool {pool} as either stable or volatile.")
-
-    min_out = int(amounts[-1] * (1 - SLIPPAGE_TOLERANCE_PERCENT / 100.0))
-
-    # ---------- 4️⃣  helper to build either classic or FOT-safe swap ----------
     def _build_swap_fn(out_min: int):
-        # Use the stability flag that succeeded during the quote
         final_routes = [(token_in, token_out, final_is_stable, factory)]
         if "swapExactTokensForTokensSupportingFeeOnTransferTokens" in router.functions:
             return router.functions.swapExactTokensForTokensSupportingFeeOnTransferTokens(
@@ -208,7 +138,6 @@ def _prepare_solidly_swap(
                 account.address,
                 int(time.time()) + 300,
             )
-        # classic path
         return router.functions.swapExactTokensForTokens(
             amount_in_wei,
             out_min,
@@ -218,9 +147,7 @@ def _prepare_solidly_swap(
         )
 
     swap_fn = _build_swap_fn(min_out)
-
-    # Gas estimation checks removed by user request.
-    print(f"  - MinOut = {min_out}")
+    print(f"  - MinOut = {min_out} (fast mode)")
     return swap_fn, min_out
 
 def _prepare_alien_base_swap(
@@ -313,15 +240,13 @@ def _prepare_alien_base_swap(
     return swap_fn, amount_out_min
 
 def _prepare_uniswap_v2_swap(router_info, amount_in_wei, path, pair_address: str = None):
-    """Prepares a swap transaction for a Uniswap V2-style DEX."""
+    """Prepares a swap transaction for a Uniswap V2-style DEX, skipping quotes for speed."""
     if pair_address:
         print(f"  - V2 Using provided pool address: {pair_address}")
     router_contract = w3.eth.contract(address=router_info['address'], abi=UNISWAP_V2_ROUTER_ABI)
-    print(f"  - V2 Path: {path}")
-    amounts_out = resilient_rpc_call(lambda: router_contract.functions.getAmountsOut(amount_in_wei, path).call())
-    print(f"  - V2 getAmountsOut result: {amounts_out}")
-    amount_out_min_wei = int(amounts_out[-1] * (1 - SLIPPAGE_TOLERANCE_PERCENT / 100.0))
-    print(f"  - V2 Min Amount Out (wei): {amount_out_min_wei}")
+    print(f"  - V2 Path: {path} (fast mode)")
+    amount_out_min_wei = 0
+    print(f"  - V2 Min Amount Out (wei): {amount_out_min_wei} (fast mode)")
     swap_function = router_contract.functions.swapExactTokensForTokens(
         amount_in_wei, amount_out_min_wei, path, account.address, int(time.time()) + 300
     )
