@@ -303,64 +303,7 @@ def _prepare_uniswap_v3_swap(
 
     print(f"  - Pool initialised with {liquidity} liquidity")
 
-    # ------------------------------------------------------------------ #
-    # ④ obtain a quote – primary: QuoterV2, fallback: router/helper, last:
-    #    constant-product estimate (reserves)
-    # ------------------------------------------------------------------ #
-    amount_out_wei = None
-
-    quoter_addr = router_info.get("quoter")
-    if not quoter_addr:
-        raise ValueError("Router config missing 'quoter' address")
-
-    print(f"  - Using quoter {quoter_addr} …")
-    quoter = w3.eth.contract(quoter_addr, abi=UNISWAP_V3_QUOTER_ABI)
-    params = (token_in, token_out, chosen_fee, amount_in_wei, 0)
-
-    try:
-        # Try V3-style single-hop quote first
-        params_single = (token_in, token_out, chosen_fee, amount_in_wei, 0)
-        print(f"  - Using quoter params {params_single}")
-        quote_tuple = resilient_rpc_call(
-            lambda: quoter.functions.quoteExactInputSingle(params_single).call(
-                {"from": account.address, "gas": 500_000}
-            )
-        )
-        amount_out_wei = int(quote_tuple[0])
-    except Exception:
-        # If single fails, try V2-style path-based quote
-        print("  - Quoter 'quoteExactInputSingle' failed, trying 'quoteExactInput'...")
-        try:
-            path = HexBytes(token_in) + chosen_fee.to_bytes(3, 'big') + HexBytes(token_out)
-            # quoteExactInput returns a single integer, not a tuple
-            amount_out_wei = resilient_rpc_call(
-                lambda: quoter.functions.quoteExactInput(path, amount_in_wei).call(
-                    {"from": account.address, "gas": 500_000}
-                )
-            )
-        except Exception as err:
-            # silent-revert fallback path
-            if "execution reverted" in str(err):
-                print("  - Quoter reverted without data; trying router helper")
-            else:
-                raise
-    # ↓ Router-level helper (not available on all deployments)
-    if amount_out_wei is None and hasattr(pool.functions, "getQuote"):
-        try:
-            amount_out_wei = pool.functions.getQuote(
-                amount_in_wei, token_in).call()
-        except Exception:
-            pass
-
-    # ↓ Final check after all quote methods attempted
-    if amount_out_wei is None:
-        raise ValueError("All V3 quote methods failed (Quoter, router helper). Cannot proceed.")
-
-    # ------------------------------------------------------------------ #
-    # ⑤ slippage guard, swap-function build, and gas estimation check
-    # ------------------------------------------------------------------ #
-    amount_out_min = int(amount_out_wei * (1 - SLIPPAGE_TOLERANCE_PERCENT / 100.0))
-    print(f"  - Quoted out: {amount_out_wei}, minOut: {amount_out_min}")
+    amount_out_min = 0
 
     router = w3.eth.contract(router_info["address"], abi=UNISWAP_V3_ROUTER_ABI)
 
