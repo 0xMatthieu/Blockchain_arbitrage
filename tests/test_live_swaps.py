@@ -5,8 +5,14 @@ import os
 from dotenv import load_dotenv
 
 # Load environment variables from .env file for local testing.
-# Make sure your .env file is correctly set up with PRIVATE_KEY, BOT_WALLET, and BASE_TESTNET_RPC_URL.
+# The main application uses BASE_RPC_URL. For these tests, you must set BASE_TESTNET_RPC_URL.
 load_dotenv()
+
+# Override the main RPC URL environment variable with the testnet one for this test suite.
+# This must be done *before* importing any application modules (like 'config') that use it.
+testnet_rpc_url = os.getenv("BASE_TESTNET_RPC_URL")
+if testnet_rpc_url:
+    os.environ['BASE_RPC_URL'] = testnet_rpc_url
 
 from config import w3, account, PRIVATE_KEY, MAX_GAS_LIMIT, DEX_ROUTERS, BASE_CURRENCY_ADDRESS
 from trading import (
