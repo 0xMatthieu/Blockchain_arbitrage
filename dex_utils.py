@@ -2,6 +2,20 @@ import time
 from config import w3, account, PRIVATE_KEY, MAX_GAS_LIMIT
 from abi import ERC20_ABI
 
+def get_token_info(token_address):
+    """Fetches name and symbol for a given token address."""
+    try:
+        token_contract = w3.eth.contract(address=token_address, abi=ERC20_ABI)
+        symbol = token_contract.functions.symbol().call()
+        name = token_contract.functions.name().call()
+        return {'symbol': symbol, 'name': name}
+    except Exception as e:
+        # Some tokens might not have string name/symbol, or might fail for other reasons.
+        # Fallback to using address for identification.
+        print(f"  - WARNING: Could not fetch name/symbol for {token_address}. Error: {str(e)[:100]}")
+        symbol_fallback = f"[{token_address[-6:]}]"
+        return {'symbol': symbol_fallback, 'name': token_address}
+
 def find_router_info(dex_id, routers):
     """Finds a router's info with robust matching, preferring higher versions."""
     dex_id = dex_id.lower().strip().replace('-', '_')

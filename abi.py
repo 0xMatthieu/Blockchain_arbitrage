@@ -2,6 +2,20 @@
 ERC20_ABI = [
     {
         "constant": True,
+        "inputs": [],
+        "name": "name",
+        "outputs": [{"name": "", "type": "string"}],
+        "type": "function"
+    },
+    {
+        "constant": True,
+        "inputs": [],
+        "name": "symbol",
+        "outputs": [{"name": "", "type": "string"}],
+        "type": "function"
+    },
+    {
+        "constant": True,
         "inputs": [{"name": "_owner", "type": "address"}, {"name": "_spender", "type": "address"}],
         "name": "allowance",
         "outputs": [{"name": "remaining", "type": "uint256"}],

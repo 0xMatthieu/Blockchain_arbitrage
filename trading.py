@@ -391,7 +391,7 @@ def _parse_receipt_for_amount_out(receipt, router_info, dex_name, target_token_a
     return amount_received_wei
 
 
-def execute_trade(buy_pool, sell_pool, spread, token_address):
+def execute_trade(buy_pool, sell_pool, spread, token_address, token_info):
     print("\n" + "!"*60)
     print(f"!!! REAL TRADE TRIGGERED - Spread: {spread:.2f}% !!!")
     print("!"*60)
@@ -434,8 +434,9 @@ def execute_trade(buy_pool, sell_pool, spread, token_address):
             return
         print(f"  - Liquidity check passed. Trade size ${trade_amount_usd:,.2f} is reasonable for both pools.")
 
+        token_name = token_info.get('name', token_address)
         # --- 1. BUY TRANSACTION ---
-        print(f"Step 1: Buying {token_address} on {buy_dex_name} (v{buy_router_info['version']})...")
+        print(f"Step 1: Buying {token_name} ({token_address}) on {buy_dex_name} (v{buy_router_info['version']})...")
         target_token_contract = w3.eth.contract(address=token_address, abi=ERC20_ABI)
         target_decimals = resilient_rpc_call(lambda: target_token_contract.functions.decimals().call())
 
@@ -495,7 +496,7 @@ def execute_trade(buy_pool, sell_pool, spread, token_address):
             return
         
         # --- 2. SELL TRANSACTION ---
-        print(f"Step 2: Selling {amount_received_wei / (10**target_decimals)} of {token_address} on {sell_dex_name} (v{sell_router_info['version']})...")
+        print(f"Step 2: Selling {amount_received_wei / (10**target_decimals)} of {token_name} ({token_address}) on {sell_dex_name} (v{sell_router_info['version']})...")
         
         # --- Sell Transaction Preparation ---
         router_type_sell = sell_router_info.get('type', 'uniswapv2')

@@ -8,12 +8,13 @@ from config import (
     TRADE_AMOUNT_BASE_TOKEN, V2_FEE_BPS, V3_FEE_MAP
 )
 from abi import ERC20_ABI
-from dex_utils import check_and_approve_token
+from dex_utils import check_and_approve_token, get_token_info
 from trading import execute_trade
 
 # --- Global State ---
 last_trade_attempt_ts = 0
 LAST_BANNERS_LOG = {}
+TOKEN_INFO = {}
 printed_lines = 0          # <- module-level mutable
 
 def _router_fee_bps(pool):
@@ -33,7 +34,8 @@ def analyze_and_trade(pairs, token_address):
     if len(pairs) < 2:
         # This message will be displayed if there are fewer than 2 valid pools
         # after filtering in main(). `pairs` will have 0 or 1 item.
-        pair_symbol = pairs[0]['pair'] if pairs else f"[{token_address[-6:]}]"
+        token_symbol = TOKEN_INFO.get(token_address, {}).get('symbol', f"[{token_address[-6:]}]")
+        pair_symbol = pairs[0]['pair'] if pairs else token_symbol
         LAST_BANNERS_LOG[token_address] = f"{pair_symbol:<20} | Not enough valid pools to analyze. Waiting..."
         return
 
@@ -63,10 +65,12 @@ def analyze_and_trade(pairs, token_address):
     # -------------------------------------------------------------
 
     if spread >= MIN_SPREAD_PERCENT:
-        execute_trade(buy_pool, sell_pool, spread, token_address)
+        token_info = TOKEN_INFO.get(token_address, {})
+        execute_trade(buy_pool, sell_pool, spread, token_address, token_info)
         last_trade_attempt_ts = time.time()
 
 def main():
+    global TOKEN_INFO
     # This flag should be True to ensure all routers are approved to spend tokens.
     check_dex = True
 
@@ -76,6 +80,13 @@ def main():
 
     if account:
         print(f"Bot wallet address: {account.address}")
+
+    print("\n--- Fetching Watched Token Information ---")
+    for addr in TOKEN_ADDRESSES:
+        info = get_token_info(addr)
+        TOKEN_INFO[addr] = info
+        print(f"  - Watching: {info['name']} ({info['symbol']})")
+    print("----------------------------------------\n")
 
     if check_dex:
         print("--- Running Initial Approval Checks ---")
@@ -88,7 +99,8 @@ def main():
             print(f"\nChecking approvals for {dex.upper()} router ({info['address']})...")
             check_and_approve_token(BASE_CURRENCY_ADDRESS, info['address'], amount_to_approve_wei)
             for token_address in TOKEN_ADDRESSES:
-                print(f"  - Approving target token: {token_address}")
+                token_name = TOKEN_INFO.get(token_address, {}).get('name', token_address)
+                print(f"  - Approving target token: {token_name} ({token_address})")
                 check_and_approve_token(token_address, info['address'], unlimited_allowance)
             time.sleep(1)
         print("--- Initial Approval Checks Complete ---\n")
@@ -102,10 +114,12 @@ def main():
             j = response.json()
 
             if not j or not j.get('pairs'):
-                print(f"\nToken: {token_address} - No pairs found.")
+                token_name = TOKEN_INFO.get(token_address, {}).get('name', token_address)
+                print(f"\nToken: {token_name} ({token_address}) - No pairs found.")
                 continue
 
-            print(f"\n--- Token: {token_address} ---")
+            token_name = TOKEN_INFO.get(token_address, {}).get('name', token_address)
+            print(f"\n--- Token: {token_name} ({token_address}) ---")
             for p in j['pairs']:
                 liquidity_usd = p.get('liquidity', {}).get('usd', 0)
                 volume_h24 = p.get('volume', {}).get('h24', 0)
@@ -120,11 +134,13 @@ def main():
 
     # Initialize banner log and reserve space on screen
     for token_address in TOKEN_ADDRESSES:
-        LAST_BANNERS_LOG[token_address] = f"[{token_address[-6:]}] Waiting for initial data..."
+        token_symbol = TOKEN_INFO.get(token_address, {}).get('symbol', f"[{token_address[-6:]}]")
+        LAST_BANNERS_LOG[token_address] = f"[{token_symbol}] Waiting for initial data..."
         print("")
 
     while True:
         for token_address in TOKEN_ADDRESSES:
+            token_symbol = TOKEN_INFO.get(token_address, {}).get('symbol', f"[{token_address[-6:]}]")
             try:
                 api_url = f"https://api.dexscreener.com/latest/dex/tokens/{token_address}"
                 response = requests.get(api_url)
@@ -132,7 +148,7 @@ def main():
                 j = response.json()
                 
                 if not j or not j.get('pairs'):
-                    LAST_BANNERS_LOG[token_address] = f"[{token_address[-6:]}] No pairs found in API response."
+                    LAST_BANNERS_LOG[token_address] = f"[{token_symbol}] No pairs found in API response."
                     current_pairs = []
                 else:
                     current_pairs = []
@@ -168,10 +184,10 @@ def main():
                     LAST_BANNERS_LOG[token_address] = f"{pair_symbol:<20} | No valid/liquid pools found."
 
             except requests.exceptions.RequestException as e:
-                LAST_BANNERS_LOG[token_address] = f"[{token_address[-6:]}] API Error: {str(e)[:80]}"
+                LAST_BANNERS_LOG[token_address] = f"[{token_symbol}] API Error: {str(e)[:80]}"
                 time.sleep(POLL_INTERVAL_ERROR)
             except Exception as e:
-                LAST_BANNERS_LOG[token_address] = f"[{token_address[-6:]}] App Error: {str(e)[:80]}"
+                LAST_BANNERS_LOG[token_address] = f"[{token_symbol}] App Error: {str(e)[:80]}"
                 time.sleep(POLL_INTERVAL_ERROR)
             
             # --- Display Banners ---
