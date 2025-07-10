@@ -385,7 +385,7 @@ SOLIDLY_FACTORY_ABI = [
     }
 ]
 
-# Minimal ABI for a Solidly/V2-style pair to check reserves
+# Minimal ABI for a Solidly/V2-style pair to check reserves and parse Swap events
 SOLIDLY_PAIR_ABI = [
     {
         "constant": True,
@@ -399,6 +399,19 @@ SOLIDLY_PAIR_ABI = [
         "payable": False,
         "stateMutability": "view",
         "type": "function"
+    },
+    {
+        "anonymous": False,
+        "inputs": [
+            {"indexed": True, "name": "sender", "type": "address"},
+            {"indexed": False, "name": "amount0In", "type": "uint256"},
+            {"indexed": False, "name": "amount1In", "type": "uint256"},
+            {"indexed": False, "name": "amount0Out", "type": "uint256"},
+            {"indexed": False, "name": "amount1Out", "type": "uint256"},
+            {"indexed": True, "name": "to", "type": "address"}
+        ],
+        "name": "Swap",
+        "type": "event"
     }
 ]
 

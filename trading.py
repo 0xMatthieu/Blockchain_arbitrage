@@ -369,15 +369,39 @@ def _parse_receipt_for_amount_out(receipt, router_info, dex_name, target_token_a
                         amount_received = abs(min(amount0, amount1))
                         if amount_received > 0:
                             amount_received_wei = amount_received
-                            logging.info(f"  - Parsed amount from Swap event: {amount_received_wei / (10**target_decimals):.4f} tokens.")
+                            logging.info(f"  - Parsed amount from V3 Swap event: {amount_received_wei / (10**target_decimals):.4f} tokens.")
                             break
         except Exception as e:
-             logging.warning(f"  - Error parsing V3 Swap event from receipt: {e}. Falling back to simple Transfer parsing.")
+             logging.warning(f"  - Error parsing V3 Swap event from receipt: {e}. Falling back to other methods.")
 
-    # Fallback for V3 or standard logic for V2/other
+    # Try parsing V2 Swap event if V3 failed or for V2 routers
+    if amount_received_wei == 0:
+        try:
+            SWAP_EVENT_TOPIC = w3.keccak(text="Swap(address,uint256,uint256,uint256,uint256,address)").hex()
+            v2_pair_contract = w3.eth.contract(abi=SOLIDLY_PAIR_ABI)
+            swap_event_obj = v2_pair_contract.events.Swap()
+            for log in receipt.logs:
+                if log.topics and log.topics[0].hex() == SWAP_EVENT_TOPIC:
+                    try:
+                        parsed = swap_event_obj.process_log(log)
+                        if w3.to_checksum_address(parsed['args']['to']) == account.address:
+                            a0_out, a1_out = parsed['args']['amount0Out'], parsed['args']['amount1Out']
+                            amount_out = a0_out or a1_out
+                            if amount_out > 0:
+                                amount_received_wei = amount_out
+                                logging.info(f"  - Parsed V2 Swap event → amount out: {amount_received_wei / (10**target_decimals):.6f}")
+                                break
+                    except Exception:
+                        continue # Log topic matched, but ABI did not.
+        except Exception as e:
+            logging.warning(f"  - Could not parse V2 Swap event: {e}. Falling back to Transfer event.")
+
+    # Fallback to simple Transfer event parsing
     if amount_received_wei == 0:
         if router_info['version'] == 3:
-            logging.warning("  - V3 Swap event parsing failed or found no amount. Trying generic Transfer event parsing...")
+            logging.warning("  - V3/V2 Swap event parsing failed or found no amount. Trying generic Transfer event parsing...")
+        else:
+            logging.info("  - V2 Swap event not found/parsed. Falling back to simple Transfer event parsing...")
         try:
             for log in receipt.logs:
                 if len(log.topics) == 3 and log.topics[0] == TRANSFER_EVENT_TOPIC and log.address == target_token_address:
