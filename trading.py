@@ -538,7 +538,21 @@ def execute_trade(buy_pool, sell_pool, spread, token_address):
         if sell_receipt['status'] == 0:
             print("  - SELL TRANSACTION FAILED. You are now holding the bought tokens.")
         else:
-            print("  - Sell transaction successful! Arbitrage attempt complete.")
+            print("  - Sell transaction successful! Parsing receipt...")
+            final_amount_out_wei = _parse_receipt_for_amount_out(
+                sell_receipt, sell_router_info, sell_dex_name, BASE_CURRENCY_ADDRESS, base_decimals
+            )
+
+            if final_amount_out_wei > 0:
+                profit_wei = final_amount_out_wei - amount_in_wei
+                profit_base_token = profit_wei / (10**base_decimals)
+
+                if profit_wei > 0:
+                    print(f"  - SUCCESS! Arbitrage profitable. Profit: {profit_base_token:.6f} base tokens.")
+                else:
+                    print(f"  - LOSS. Arbitrage resulted in a loss of: {abs(profit_base_token):.6f} base tokens.")
+            else:
+                print("  - CRITICAL: Could not determine final amount from sell receipt. Profit/loss unknown.")
 
     except Exception as e:
         print(f"An unexpected error occurred during trade execution: {e}")
