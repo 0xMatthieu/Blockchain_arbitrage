@@ -328,7 +328,6 @@ def _prepare_uniswap_v3_swap(
             "tokenOut": token_out,
             "fee": chosen_fee,
             "recipient": account.address,
-            "deadline": int(time.time()) + 300,
             "amountIn": amount_in_wei,
             "amountOutMinimum": min_out,
             "sqrtPriceLimitX96": 0,
