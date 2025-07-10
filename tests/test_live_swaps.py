@@ -2,17 +2,17 @@ import pytest
 import logging
 import time
 import os
+import sys
 from dotenv import load_dotenv
+from web3 import Web3
 
 # Load environment variables from .env file for local testing.
 # The main application uses BASE_RPC_URL. For these tests, you must set BASE_TESTNET_RPC_URL.
 load_dotenv()
 
-# Override the main RPC URL environment variable with the testnet one for this test suite.
-# This must be done *before* importing any application modules (like 'config') that use it.
-testnet_rpc_url = os.getenv("BASE_TESTNET_RPC_URL")
-if testnet_rpc_url:
-    os.environ['BASE_RPC_URL'] = testnet_rpc_url
+# The test dynamically switches to the testnet RPC. We need to import the `trading`
+# module itself to be able to monkeypatch its `w3` instance.
+import trading
 
 from config import w3, account, PRIVATE_KEY, MAX_GAS_LIMIT, DEX_ROUTERS, BASE_CURRENCY_ADDRESS
 from trading import (
@@ -159,12 +159,25 @@ def _perform_swap(dex_name: str, token_in_addr: str, token_out_addr: str, amount
 
 @pytest.mark.skipif(not PRIVATE_KEY_EXISTS, reason="Requires PRIVATE_KEY in .env for live transactions")
 @pytest.mark.parametrize("dex_name, pair_address", DEX_TEST_CONFIG)
-def test_dex_swap_cycle(dex_name, pair_address):
+def test_dex_swap_cycle(dex_name, pair_address, monkeypatch):
     """
     Performs a real swap cycle (WETH -> USDC -> WETH) on a given DEX.
     This test verifies that the swap preparation functions and transaction
     execution logic are working correctly on-chain.
     """
+    testnet_rpc_url = os.getenv("BASE_TESTNET_RPC_URL")
+    if not testnet_rpc_url:
+        pytest.skip("BASE_TESTNET_RPC_URL not set, skipping live test.")
+
+    # Create a dedicated w3 instance for the testnet and patch it into relevant modules.
+    # This is more robust than manipulating environment variables at the top level.
+    test_w3 = Web3(Web3.HTTPProvider(testnet_rpc_url))
+    if not test_w3.is_connected():
+        pytest.fail(f"Failed to connect to testnet RPC: {testnet_rpc_url}")
+
+    monkeypatch.setattr(trading, 'w3', test_w3)
+    monkeypatch.setattr(sys.modules[__name__], 'w3', test_w3)
+
     logging.info(f"\n{'='*20} Starting Test: Swap Cycle on {dex_name.upper()} {'='*20}")
 
     weth_contract = w3.eth.contract(address=BASE_CURRENCY_ADDRESS, abi=ERC20_ABI)
