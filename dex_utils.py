@@ -102,4 +102,4 @@ def check_and_approve_token(token_address, spender_address, amount_to_approve_we
         except Exception as e:
             print(f"  - Could not send approval transaction: {e}")
     else:
-        print("Sufficient allowance already set.")
+        print(f"Sufficient allowance already set. Amount is {allowance}")
