@@ -15,9 +15,7 @@ from logging_config import setup_logging
 
 # --- Global State ---
 last_trade_attempt_ts = 0
-LAST_BANNERS_LOG = {}
 TOKEN_INFO = {}
-printed_lines = 0          # <- module-level mutable
 
 def _router_fee_bps(pool):
     """Return total fee bps for price quoted by DexScreener item."""
@@ -27,7 +25,7 @@ def _router_fee_bps(pool):
         return V2_FEE_BPS
 
 def analyze_and_trade(pairs, token_address):
-    global last_trade_attempt_ts, LAST_BANNERS_LOG
+    global last_trade_attempt_ts
 
     if time.time() - last_trade_attempt_ts < TRADE_COOLDOWN_SECONDS:
         return
@@ -38,7 +36,7 @@ def analyze_and_trade(pairs, token_address):
         # after filtering in main(). `pairs` will have 0 or 1 item.
         token_symbol = TOKEN_INFO.get(token_address, {}).get('symbol', f"[{token_address[-6:]}]")
         pair_symbol = pairs[0]['pair'] if pairs else token_symbol
-        LAST_BANNERS_LOG[token_address] = f"{pair_symbol:<20} | Not enough valid pools to analyze. Waiting..."
+        logging.info(f"{pair_symbol:<20} | Not enough valid pools to analyze. Waiting...")
         return
 
     # sort by quoted token price
@@ -63,7 +61,7 @@ def analyze_and_trade(pairs, token_address):
         f"{sell_pool['dex'].upper()} (sell, fee {sell_fee*100:.2f}%) | "
         f"Spread: {spread:6.2f}%"
     )
-    LAST_BANNERS_LOG[token_address] = banner
+    logging.info(banner)
     # -------------------------------------------------------------
 
     if spread >= MIN_SPREAD_PERCENT:
@@ -135,12 +133,6 @@ def main():
     logging.info(f"Polling API every {POLL_INTERVAL:.2f} seconds for each token.")
     logging.info("-" * 50)
 
-    # Initialize banner log and reserve space on screen
-    for token_address in TOKEN_ADDRESSES:
-        token_symbol = TOKEN_INFO.get(token_address, {}).get('symbol', f"[{token_address[-6:]}]")
-        LAST_BANNERS_LOG[token_address] = f"[{token_symbol}] Waiting for initial data..."
-        print("")
-
     while True:
         for token_address in TOKEN_ADDRESSES:
             token_symbol = TOKEN_INFO.get(token_address, {}).get('symbol', f"[{token_address[-6:]}]")
@@ -151,7 +143,7 @@ def main():
                 j = response.json()
                 
                 if not j or not j.get('pairs'):
-                    LAST_BANNERS_LOG[token_address] = f"[{token_symbol}] No pairs found in API response."
+                    logging.info(f"[{token_symbol}] No pairs found in API response.")
                     current_pairs = []
                 else:
                     current_pairs = []
@@ -184,35 +176,15 @@ def main():
                 elif j and j.get('pairs'):
                     # case where pairs exist but none are valid (e.g. not against base currency or no liquidity)
                     pair_symbol = f"{j['pairs'][0]['baseToken']['symbol']}/{j['pairs'][0]['quoteToken']['symbol']}"
-                    LAST_BANNERS_LOG[token_address] = f"{pair_symbol:<20} | No valid/liquid pools found."
+                    logging.info(f"{pair_symbol:<20} | No valid/liquid pools found.")
 
             except requests.exceptions.RequestException as e:
-                LAST_BANNERS_LOG[token_address] = f"[{token_symbol}] API Error: {str(e)[:80]}"
+                logging.warning(f"[{token_symbol}] API Error: {str(e)[:80]}")
                 time.sleep(POLL_INTERVAL_ERROR)
             except Exception as e:
-                LAST_BANNERS_LOG[token_address] = f"[{token_symbol}] App Error: {str(e)[:80]}"
+                logging.error(f"[{token_symbol}] App Error: {str(e)[:80]}")
                 time.sleep(POLL_INTERVAL_ERROR)
             
-            # --- Display Banners ---
-            # Overwrite the previous banner block in-place.
-            # `LAST_BANNERS_LOG` must already hold one banner string per token.
-            # The display order is the order in which the dict was first populated
-            # (Python 3.7+ preserves insertion order).
-            """
-            banners = list(LAST_BANNERS_LOG.values())
-            n = len(banners)
-
-            if n > 0:
-                # move cursor UP n lines AND to column-0  (ESC[{n}F)
-                sys.stdout.write(f"\033[{n}F")
-
-                # rewrite each line;  \r ensures column-0, \033[K clears leftovers
-                for line in banners:
-                    sys.stdout.write(f"\r{line}\033[K\n")
-
-                # flush so the terminal executes the codes immediately
-                sys.stdout.flush()
-            """
             time.sleep(POLL_INTERVAL)
 
 if __name__ == "__main__":
