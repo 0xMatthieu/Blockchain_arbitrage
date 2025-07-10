@@ -25,7 +25,7 @@ V3_FEE_MAP = {100: 1,    # Uniswap 0.01 %
              }
 
 # --- Blockchain Configuration ---
-BASE_RPC_URL = os.getenv("BASE_RPC_URL")
+BASE_RPC_URL = os.getenv("BASE_TESTNET_RPC_URL")
 PRIVATE_KEY = os.getenv("PRIVATE_KEY")
 BOT_WALLET = os.getenv("BOT_WALLET")
 # Retry mechanism for RPC calls
@@ -53,7 +53,7 @@ except json.JSONDecodeError as e:
 # Determine the correct Web3 provider based on the BASE_RPC_URL scheme.
 if not BASE_RPC_URL:
     raise ValueError(
-        "BASE_RPC_URL is not set. Please provide a websocket or http(s) RPC URL in your .env file."
+        "BASE_TESTNET_RPC_URL is not set. Please provide a websocket or http(s) RPC URL in your .env file."
     )
 
 if BASE_RPC_URL.startswith(("ws://", "wss://")):
@@ -64,7 +64,7 @@ elif BASE_RPC_URL.startswith(("http://", "https://")):
     w3 = Web3(Web3.HTTPProvider(BASE_RPC_URL))
 else:
     raise ValueError(
-        "Invalid BASE_RPC_URL. Must start with ws://, wss://, http:// or https://"
+        "Invalid BASE_TESTNET_RPC_URL. Must start with ws://, wss://, http:// or https://"
     )
 
 # --- Address Checksumming ---

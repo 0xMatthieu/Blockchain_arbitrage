@@ -5,7 +5,7 @@ import os
 from dotenv import load_dotenv
 
 # Load environment variables from .env file for local testing.
-# Make sure your .env file is correctly set up with PRIVATE_KEY, BOT_WALLET, and BASE_RPC_URL.
+# Make sure your .env file is correctly set up with PRIVATE_KEY, BOT_WALLET, and BASE_TESTNET_RPC_URL.
 load_dotenv()
 
 from config import w3, account, PRIVATE_KEY, MAX_GAS_LIMIT, DEX_ROUTERS, BASE_CURRENCY_ADDRESS
