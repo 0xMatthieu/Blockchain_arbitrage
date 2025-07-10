@@ -1,4 +1,5 @@
 import time
+import logging
 from web3.logs import DISCARD
 from web3.exceptions import ContractLogicError
 from config import (
@@ -34,10 +35,10 @@ def resilient_rpc_call(callable_func):
             # Try to decode a Quoter V2-style revert with data payload
             payload = err.args[0].get("data") if err.args and isinstance(err.args[0], dict) else None
             if payload and len(payload) > 4:
-                print("  - [RPC] Call reverted with data. Attempting to decode as Quoter V2 response.")
+                logging.warning("  - [RPC] Call reverted with data. Attempting to decode as Quoter V2 response.")
                 data_bytes = HexBytes(payload)[4:] if len(payload) % 32 else HexBytes(payload)
                 decoded = decode(_QUOTER_V2_RET_TYPES, data_bytes.ljust(32 * 4, b"\0"))
-                print(f"  - [RPC] Decoded amountOut: {decoded[0]}")
+                logging.info(f"  - [RPC] Decoded amountOut: {decoded[0]}")
                 return decoded[0]
             # For empty reverts or other logic errors, fall through to retry
         except Exception as err:
@@ -48,10 +49,10 @@ def resilient_rpc_call(callable_func):
         # We will wait and retry.
         if i < RPC_MAX_RETRIES - 1:
             wait = RPC_BACKOFF_FACTOR * (2 ** i)
-            print(f"\n  - [RPC] Call failed: {last_exception}. Retrying in {wait:.2f}s ({i + 1}/{RPC_MAX_RETRIES})")
+            logging.warning(f"\n  - [RPC] Call failed: {last_exception}. Retrying in {wait:.2f}s ({i + 1}/{RPC_MAX_RETRIES})")
             time.sleep(wait)
         else:
-            print(f"  - [RPC] Call failed after {RPC_MAX_RETRIES} retries.")
+            logging.error(f"  - [RPC] Call failed after {RPC_MAX_RETRIES} retries.")
 
     # After all retries, raise the last captured exception.
     raise Exception(f"RPC call failed after {RPC_MAX_RETRIES} retries.") from last_exception
@@ -59,9 +60,9 @@ def resilient_rpc_call(callable_func):
 def _get_v3_pool_abi(dex_name):
     """Selects the correct V3 pool ABI based on the DEX name."""
     if 'pancake' in dex_name.lower():
-        print("  - Using PancakeSwap V3 Pool ABI.")
+        logging.info("  - Using PancakeSwap V3 Pool ABI.")
         return PANCAKE_V3_POOL_ABI
-    print("  - Using Uniswap V3 Pool ABI.")
+    logging.info("  - Using Uniswap V3 Pool ABI.")
     return UNISWAP_V3_POOL_ABI
 
 def _prepare_1inch_swap(router_info: dict, amount_in_wei: int, token_in: str, token_out: str):
@@ -69,7 +70,7 @@ def _prepare_1inch_swap(router_info: dict, amount_in_wei: int, token_in: str, to
     Prepares a swap transaction for the 1inch Aggregation router using on-chain calls.
     Sets minReturn to 0 for maximum speed, skipping quotes.
     """
-    print("  - Preparing 1inch on-chain swap (fast mode)...")
+    logging.info("  - Preparing 1inch on-chain swap (fast mode)...")
     router = w3.eth.contract(address=router_info['address'], abi=ONEINCH_V6_ROUTER_ABI)
 
     # 1inch default executor for Base network.
@@ -79,7 +80,7 @@ def _prepare_1inch_swap(router_info: dict, amount_in_wei: int, token_in: str, to
     executor_data = b""
 
     amount_out_min_wei = 0
-    print(f"  - 1inch Min Amount Out: 0 (fast mode)")
+    logging.info(f"  - 1inch Min Amount Out: 0 (fast mode)")
 
     final_desc = (
         token_in,           # srcToken
@@ -114,12 +115,12 @@ def _prepare_solidly_swap(
     if not factory:
         raise ValueError(f"{dex_name}: no factory address in config")
 
-    print(f"  - Solidly router detected ({dex_name}) (fast mode).")
+    logging.info(f"  - Solidly router detected ({dex_name}) (fast mode).")
     
     if not pair_address or not w3.eth.get_code(pair_address):
         raise ValueError(f"{dex_name}: No valid pair_address provided for solidly swap.")
     
-    print(f"  - Using provided pool address: {pair_address}")
+    logging.info(f"  - Using provided pool address: {pair_address}")
     
     # For speed, we assume the pool is volatile. This is the most common case.
     # The transaction may fail if the pool is stable.
@@ -147,7 +148,7 @@ def _prepare_solidly_swap(
         )
 
     swap_fn = _build_swap_fn(min_out)
-    print(f"  - MinOut = {min_out} (fast mode)")
+    logging.info(f"  - MinOut = {min_out} (fast mode)")
     return swap_fn, min_out
 
 def _prepare_alien_base_swap(
@@ -167,7 +168,7 @@ def _prepare_alien_base_swap(
     if not factory_address:
         raise ValueError(f"V3 DEX '{dex_name}' requires a 'factory' address")
 
-    print(f"  - Alien Base V3 DEX detected. Querying factory {factory_address} …")
+    logging.info(f"  - Alien Base V3 DEX detected. Querying factory {factory_address} …")
     factory = w3.eth.contract(factory_address, abi=ALIEN_BASE_V3_FACTORY_ABI)
 
     # ------------------------------------------------------------------ #
@@ -176,18 +177,18 @@ def _prepare_alien_base_swap(
     chosen_fee, pool_address = None, None
     
     if pair_address and w3.eth.get_code(pair_address):
-        print(f"  - Using provided pool address: {pair_address}")
+        logging.info(f"  - Using provided pool address: {pair_address}")
         pool_contract = w3.eth.contract(address=pair_address, abi=ALIEN_BASE_V3_POOL_ABI)
         try:
             # Confirm fee tier directly from the provided pool
             chosen_fee = resilient_rpc_call(lambda: pool_contract.functions.fee().call())
             pool_address = pair_address
-            print(f"  - Successfully confirmed pool at fee tier {chosen_fee} bps.")
+            logging.info(f"  - Successfully confirmed pool at fee tier {chosen_fee} bps.")
         except Exception as e:
-            print(f"  - WARN: Could not confirm fee for provided pool {pair_address}. Falling back to factory search. Error: {e}")
+            logging.warning(f"  - Could not confirm fee for provided pool {pair_address}. Falling back to factory search. Error: {e}")
 
     if not pool_address:
-        print(f"  - No valid pool provided. Querying factory {factory_address} for a pool...")
+        logging.info(f"  - No valid pool provided. Querying factory {factory_address} for a pool...")
         FEE_TIERS = [500, 3000, 10000, 2500, 100]
         zero = "0x" + "00" * 20
         for fee in FEE_TIERS:
@@ -196,7 +197,7 @@ def _prepare_alien_base_swap(
             )
             if addr and addr != zero and w3.eth.get_code(addr):
                 chosen_fee, pool_address = fee, addr
-                print(f"  - Pool {addr} at {fee} bps selected")
+                logging.info(f"  - Pool {addr} at {fee} bps selected")
                 break
 
     if not pool_address:
@@ -214,7 +215,7 @@ def _prepare_alien_base_swap(
     if liquidity == 0:
         raise ValueError("Pool initialised but has zero active liquidity")
 
-    print(f"  - Pool initialised with {liquidity} liquidity")
+    logging.info(f"  - Pool initialised with {liquidity} liquidity")
 
     amount_out_min = 0
 
@@ -233,7 +234,7 @@ def _prepare_alien_base_swap(
         }
         return router.functions.exactInputSingle(swap_params)
 
-    print(f"  - Prepare swap")
+    logging.info(f"  - Prepare swap")
     swap_fn = _build_v3_swap_fn(amount_out_min)
 
     # Gas estimation checks removed by user request.
@@ -242,11 +243,11 @@ def _prepare_alien_base_swap(
 def _prepare_uniswap_v2_swap(router_info, amount_in_wei, path, pair_address: str = None):
     """Prepares a swap transaction for a Uniswap V2-style DEX, skipping quotes for speed."""
     if pair_address:
-        print(f"  - V2 Using provided pool address: {pair_address}")
+        logging.info(f"  - V2 Using provided pool address: {pair_address}")
     router_contract = w3.eth.contract(address=router_info['address'], abi=UNISWAP_V2_ROUTER_ABI)
-    print(f"  - V2 Path: {path} (fast mode)")
+    logging.info(f"  - V2 Path: {path} (fast mode)")
     amount_out_min_wei = 0
-    print(f"  - V2 Min Amount Out (wei): {amount_out_min_wei} (fast mode)")
+    logging.info(f"  - V2 Min Amount Out (wei): {amount_out_min_wei} (fast mode)")
     swap_function = router_contract.functions.swapExactTokensForTokens(
         amount_in_wei, amount_out_min_wei, path, account.address, int(time.time()) + 300
     )
@@ -269,7 +270,7 @@ def _prepare_uniswap_v3_swap(
     if not factory_address:
         raise ValueError(f"V3 DEX '{dex_name}' requires a 'factory' address")
 
-    print(f"  - V3 DEX detected. Querying factory {factory_address} …")
+    logging.info(f"  - V3 DEX detected. Querying factory {factory_address} …")
     factory = w3.eth.contract(factory_address, abi=UNISWAP_V3_FACTORY_ABI)
 
     # ------------------------------------------------------------------ #
@@ -278,18 +279,18 @@ def _prepare_uniswap_v3_swap(
     chosen_fee, pool_address = None, None
     
     if pair_address and w3.eth.get_code(pair_address):
-        print(f"  - Using provided pool address: {pair_address}")
+        logging.info(f"  - Using provided pool address: {pair_address}")
         pool_contract = w3.eth.contract(address=pair_address, abi=_get_v3_pool_abi(dex_name))
         try:
             # Confirm fee tier directly from the provided pool
             chosen_fee = resilient_rpc_call(lambda: pool_contract.functions.fee().call())
             pool_address = pair_address
-            print(f"  - Successfully confirmed pool at fee tier {chosen_fee} bps.")
+            logging.info(f"  - Successfully confirmed pool at fee tier {chosen_fee} bps.")
         except Exception as e:
-            print(f"  - WARN: Could not confirm fee for provided pool {pair_address}. Falling back to factory search. Error: {e}")
+            logging.warning(f"  - Could not confirm fee for provided pool {pair_address}. Falling back to factory search. Error: {e}")
 
     if not pool_address:
-        print(f"  - No valid pool provided. Querying factory {factory_address} for a pool...")
+        logging.info(f"  - No valid pool provided. Querying factory {factory_address} for a pool...")
         FEE_TIERS = [500, 3000, 10000, 2500, 100]
         zero = "0x" + "00" * 20
         for fee in FEE_TIERS:
@@ -298,7 +299,7 @@ def _prepare_uniswap_v3_swap(
             )
             if addr and addr != zero and w3.eth.get_code(addr):
                 chosen_fee, pool_address = fee, addr
-                print(f"  - Pool {addr} at {fee} bps selected")
+                logging.info(f"  - Pool {addr} at {fee} bps selected")
                 break
 
     if not pool_address:
@@ -316,7 +317,7 @@ def _prepare_uniswap_v3_swap(
     if liquidity == 0:
         raise ValueError("Pool initialised but has zero active liquidity")
 
-    print(f"  - Pool initialised with {liquidity} liquidity")
+    logging.info(f"  - Pool initialised with {liquidity} liquidity")
 
     amount_out_min = 0
 
@@ -334,7 +335,7 @@ def _prepare_uniswap_v3_swap(
         }
         return router.functions.exactInputSingle(swap_params)
 
-    print(f"  - Prepare swap")
+    logging.info(f"  - Prepare swap")
     swap_fn = _build_v3_swap_fn(amount_out_min)
 
     # Gas estimation checks removed by user request.
@@ -355,7 +356,7 @@ def _parse_receipt_for_amount_out(receipt, router_info, dex_name, target_token_a
                    log.topics[0] == TRANSFER_EVENT_TOPIC and \
                    w3.to_checksum_address('0x' + log.topics[1].hex()[-40:]) == account.address:
                     pool_address = w3.to_checksum_address('0x' + log.topics[2].hex()[-40:])
-                    print(f"  - Inferred V3 pool address: {pool_address}")
+                    logging.info(f"  - Inferred V3 pool address: {pool_address}")
                     break
             
             if pool_address:
@@ -368,36 +369,36 @@ def _parse_receipt_for_amount_out(receipt, router_info, dex_name, target_token_a
                         amount_received = abs(min(amount0, amount1))
                         if amount_received > 0:
                             amount_received_wei = amount_received
-                            print(f"  - Parsed amount from Swap event: {amount_received_wei / (10**target_decimals):.4f} tokens.")
+                            logging.info(f"  - Parsed amount from Swap event: {amount_received_wei / (10**target_decimals):.4f} tokens.")
                             break
         except Exception as e:
-             print(f"  - Error parsing V3 Swap event from receipt: {e}. Falling back to simple Transfer parsing.")
+             logging.warning(f"  - Error parsing V3 Swap event from receipt: {e}. Falling back to simple Transfer parsing.")
 
     # Fallback for V3 or standard logic for V2/other
     if amount_received_wei == 0:
         if router_info['version'] == 3:
-            print("  - V3 Swap event parsing failed or found no amount. Trying generic Transfer event parsing...")
+            logging.warning("  - V3 Swap event parsing failed or found no amount. Trying generic Transfer event parsing...")
         try:
             for log in receipt.logs:
                 if len(log.topics) == 3 and log.topics[0] == TRANSFER_EVENT_TOPIC and log.address == target_token_address:
                     recipient_address = w3.to_checksum_address('0x' + log.topics[2].hex()[-40:])
                     if recipient_address == account.address:
                         amount_received_wei = w3.codec.decode(['uint256'], log.data)[0]
-                        print(f"  - Found transfer of {amount_received_wei / (10**target_decimals):.4f} tokens to wallet.")
+                        logging.info(f"  - Found transfer of {amount_received_wei / (10**target_decimals):.4f} tokens to wallet.")
                         break
         except Exception as e:
-            print(f"  - Error manually parsing transaction receipt for Transfer events: {e}")
+            logging.error(f"  - Error manually parsing transaction receipt for Transfer events: {e}")
 
     return amount_received_wei
 
 
 def execute_trade(buy_pool, sell_pool, spread, token_address, token_info):
-    print("\n" + "!"*60)
-    print(f"!!! REAL TRADE TRIGGERED - Spread: {spread:.2f}% !!!")
-    print("!"*60)
+    logging.info("\n" + "!"*60)
+    logging.warning(f"!!! REAL TRADE TRIGGERED - Spread: {spread:.2f}% !!!")
+    logging.info("!"*60)
 
     if not all([account, BASE_CURRENCY_ADDRESS, TRADE_AMOUNT_BASE_TOKEN > 0]):
-        print("!!! TRADING SKIPPED: Wallet or trading parameters not configured correctly.")
+        logging.warning("!!! TRADING SKIPPED: Wallet or trading parameters not configured correctly.")
         return
 
     buy_dex_name = buy_pool['dex']
@@ -406,37 +407,37 @@ def execute_trade(buy_pool, sell_pool, spread, token_address, token_info):
     sell_router_info = find_router_info(sell_dex_name, DEX_ROUTERS)
 
     if not buy_router_info or not sell_router_info:
-        print(f"!!! TRADING SKIPPED: Router info for '{buy_dex_name}' or '{sell_dex_name}' not found in .env")
+        logging.warning(f"!!! TRADING SKIPPED: Router info for '{buy_dex_name}' or '{sell_dex_name}' not found in .env")
         return
 
     try:
         # --- Pre-flight checks ---
-        print("  - Performing pre-flight checks...")
+        logging.info("  - Performing pre-flight checks...")
         base_token_contract = w3.eth.contract(address=BASE_CURRENCY_ADDRESS, abi=ERC20_ABI)
         base_decimals = resilient_rpc_call(lambda: base_token_contract.functions.decimals().call())
         amount_in_wei = int(TRADE_AMOUNT_BASE_TOKEN * (10**base_decimals))
         wallet_balance_wei = resilient_rpc_call(lambda: base_token_contract.functions.balanceOf(account.address).call())
 
         if wallet_balance_wei < amount_in_wei:
-            print(f"!!! TRADE SKIPPED: Insufficient balance. Have {wallet_balance_wei / (10**base_decimals):.6f}, need {TRADE_AMOUNT_BASE_TOKEN}.")
+            logging.warning(f"!!! TRADE SKIPPED: Insufficient balance. Have {wallet_balance_wei / (10**base_decimals):.6f}, need {TRADE_AMOUNT_BASE_TOKEN}.")
             return
-        print(f"  - Wallet balance check passed. Have {wallet_balance_wei / (10**base_decimals):.6f}, need {TRADE_AMOUNT_BASE_TOKEN}.")
+        logging.info(f"  - Wallet balance check passed. Have {wallet_balance_wei / (10**base_decimals):.6f}, need {TRADE_AMOUNT_BASE_TOKEN}.")
 
         trade_amount_usd = TRADE_AMOUNT_BASE_TOKEN * buy_pool.get('base_currency_price_usd', 0)
         if trade_amount_usd == 0:
-            print("!!! TRADE SKIPPED: Could not determine USD value of trade amount.")
+            logging.warning("!!! TRADE SKIPPED: Could not determine USD value of trade amount.")
             return
 
         LIQUIDITY_IMPACT_THRESHOLD = 0.1 
         if trade_amount_usd > buy_pool['liq_usd'] * LIQUIDITY_IMPACT_THRESHOLD or \
            trade_amount_usd > sell_pool['liq_usd'] * LIQUIDITY_IMPACT_THRESHOLD:
-            print(f"!!! TRADE SKIPPED: Trade size (${trade_amount_usd:,.2f}) is too large for pool liquidity.")
+            logging.warning(f"!!! TRADE SKIPPED: Trade size (${trade_amount_usd:,.2f}) is too large for pool liquidity.")
             return
-        print(f"  - Liquidity check passed. Trade size ${trade_amount_usd:,.2f} is reasonable for both pools.")
+        logging.info(f"  - Liquidity check passed. Trade size ${trade_amount_usd:,.2f} is reasonable for both pools.")
 
         token_name = token_info.get('name', token_address)
         # --- 1. BUY TRANSACTION ---
-        print(f"Step 1: Buying {token_name} ({token_address}) on {buy_dex_name} (v{buy_router_info['version']})...")
+        logging.info(f"Step 1: Buying {token_name} ({token_address}) on {buy_dex_name} (v{buy_router_info['version']})...")
         target_token_contract = w3.eth.contract(address=token_address, abi=ERC20_ABI)
         target_decimals = resilient_rpc_call(lambda: target_token_contract.functions.decimals().call())
 
@@ -466,7 +467,7 @@ def execute_trade(buy_pool, sell_pool, spread, token_address, token_info):
         else:
             raise NotImplementedError(f"DEX version {buy_router_info['version']} or type '{router_type}' is not supported for buys.")
         
-        print("  - Building buy transaction...")
+        logging.info("  - Building buy transaction...")
         buy_payload = {
             'from': account.address, 'nonce': nonce,
             'maxFeePerGas': max_fee_per_gas, 'maxPriorityFeePerGas': max_priority_fee,
@@ -481,22 +482,22 @@ def execute_trade(buy_pool, sell_pool, spread, token_address, token_info):
 
         signed_buy_txn = w3.eth.account.sign_transaction(buy_txn, PRIVATE_KEY)
         buy_tx_hash = w3.eth.send_raw_transaction(signed_buy_txn.raw_transaction)
-        print(f"  - Buy Tx sent: {buy_tx_hash.hex()}. Waiting for receipt...")
+        logging.info(f"  - Buy Tx sent: {buy_tx_hash.hex()}. Waiting for receipt...")
         buy_receipt = w3.eth.wait_for_transaction_receipt(buy_tx_hash, timeout=120)
 
         if buy_receipt['status'] == 0:
-            print("  - BUY TRANSACTION FAILED (reverted). Aborting arbitrage.")
+            logging.error("  - BUY TRANSACTION FAILED (reverted). Aborting arbitrage.")
             return
 
-        print("  - Buy transaction successful! Parsing receipt...")
+        logging.info("  - Buy transaction successful! Parsing receipt...")
         amount_received_wei = _parse_receipt_for_amount_out(buy_receipt, buy_router_info, buy_dex_name, token_address, target_decimals)
 
         if amount_received_wei == 0:
-            print("  - CRITICAL: Could not determine received token amount from receipt. Aborting sell.")
+            logging.error("  - CRITICAL: Could not determine received token amount from receipt. Aborting sell.")
             return
         
         # --- 2. SELL TRANSACTION ---
-        print(f"Step 2: Selling {amount_received_wei / (10**target_decimals)} of {token_name} ({token_address}) on {sell_dex_name} (v{sell_router_info['version']})...")
+        logging.info(f"Step 2: Selling {amount_received_wei / (10**target_decimals)} of {token_name} ({token_address}) on {sell_dex_name} (v{sell_router_info['version']})...")
         
         # --- Sell Transaction Preparation ---
         router_type_sell = sell_router_info.get('type', 'uniswapv2')
@@ -518,7 +519,7 @@ def execute_trade(buy_pool, sell_pool, spread, token_address, token_info):
         else:
             raise NotImplementedError(f"DEX version {sell_router_info['version']} or type '{router_type_sell}' is not supported for sells.")
 
-        print("  - Building sell transaction...")
+        logging.info("  - Building sell transaction...")
         sell_payload = {
             'from': account.address, 'nonce': sell_nonce,
             'maxFeePerGas': max_fee_per_gas, 'maxPriorityFeePerGas': max_priority_fee,
@@ -533,13 +534,13 @@ def execute_trade(buy_pool, sell_pool, spread, token_address, token_info):
             
         signed_sell_txn = w3.eth.account.sign_transaction(sell_txn, PRIVATE_KEY)
         sell_tx_hash = w3.eth.send_raw_transaction(signed_sell_txn.raw_transaction)
-        print(f"  - Sell Tx sent: {sell_tx_hash.hex()}. Waiting for receipt...")
+        logging.info(f"  - Sell Tx sent: {sell_tx_hash.hex()}. Waiting for receipt...")
         sell_receipt = w3.eth.wait_for_transaction_receipt(sell_tx_hash, timeout=120)
 
         if sell_receipt['status'] == 0:
-            print("  - SELL TRANSACTION FAILED. You are now holding the bought tokens.")
+            logging.error("  - SELL TRANSACTION FAILED. You are now holding the bought tokens.")
         else:
-            print("  - Sell transaction successful! Parsing receipt...")
+            logging.info("  - Sell transaction successful! Parsing receipt...")
             final_amount_out_wei = _parse_receipt_for_amount_out(
                 sell_receipt, sell_router_info, sell_dex_name, BASE_CURRENCY_ADDRESS, base_decimals
             )
@@ -549,11 +550,11 @@ def execute_trade(buy_pool, sell_pool, spread, token_address, token_info):
                 profit_base_token = profit_wei / (10**base_decimals)
 
                 if profit_wei > 0:
-                    print(f"  - SUCCESS! Arbitrage profitable. Profit: {profit_base_token:.6f} base tokens.")
+                    logging.info(f"  - SUCCESS! Arbitrage profitable. Profit: {profit_base_token:.6f} base tokens.")
                 else:
-                    print(f"  - LOSS. Arbitrage resulted in a loss of: {abs(profit_base_token):.6f} base tokens.")
+                    logging.warning(f"  - LOSS. Arbitrage resulted in a loss of: {abs(profit_base_token):.6f} base tokens.")
             else:
-                print("  - CRITICAL: Could not determine final amount from sell receipt. Profit/loss unknown.")
+                logging.error("  - CRITICAL: Could not determine final amount from sell receipt. Profit/loss unknown.")
 
     except Exception as e:
-        print(f"An unexpected error occurred during trade execution: {e}")
+        logging.error(f"An unexpected error occurred during trade execution: {e}", exc_info=True)

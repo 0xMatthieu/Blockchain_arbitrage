@@ -2,6 +2,7 @@ import requests
 import sys
 import json
 import time
+import logging
 from config import (
     w3, account, TOKEN_ADDRESSES, BASE_CURRENCY_ADDRESS, DEX_ROUTERS,
     MIN_LIQUIDITY_USD, MIN_VOLUME_USD, MIN_SPREAD_PERCENT, POLL_INTERVAL, POLL_INTERVAL_ERROR, TRADE_COOLDOWN_SECONDS,
@@ -10,6 +11,7 @@ from config import (
 from abi import ERC20_ABI
 from dex_utils import check_and_approve_token, get_token_info
 from trading import execute_trade
+from logging_config import setup_logging
 
 # --- Global State ---
 last_trade_attempt_ts = 0
@@ -70,42 +72,43 @@ def analyze_and_trade(pairs, token_address):
         last_trade_attempt_ts = time.time()
 
 def main():
+    setup_logging()
     global TOKEN_INFO
     # This flag should be True to ensure all routers are approved to spend tokens.
     check_dex = True
 
     if not all([TOKEN_ADDRESSES, BASE_CURRENCY_ADDRESS, account]):
-        print("Error: Core configuration (TOKEN_ADDRESSES, BASE_CURRENCY_ADDRESS, PRIVATE_KEY) is missing.")
+        logging.error("Error: Core configuration (TOKEN_ADDRESSES, BASE_CURRENCY_ADDRESS, PRIVATE_KEY) is missing.")
         return
 
     if account:
-        print(f"Bot wallet address: {account.address}")
+        logging.info(f"Bot wallet address: {account.address}")
 
-    print("\n--- Fetching Watched Token Information ---")
+    logging.info("\n--- Fetching Watched Token Information ---")
     for addr in TOKEN_ADDRESSES:
         info = get_token_info(addr)
         TOKEN_INFO[addr] = info
-        print(f"  - Watching: {info['name']} ({info['symbol']})")
-    print("----------------------------------------\n")
+        logging.info(f"  - Watching: {info['name']} ({info['symbol']})")
+    logging.info("----------------------------------------\n")
 
     if check_dex:
-        print("--- Running Initial Approval Checks ---")
+        logging.info("--- Running Initial Approval Checks ---")
         base_token_contract = w3.eth.contract(address=BASE_CURRENCY_ADDRESS, abi=ERC20_ABI)
         base_decimals = base_token_contract.functions.decimals().call()
         amount_to_approve_wei = int(TRADE_AMOUNT_BASE_TOKEN * (10**base_decimals))
         unlimited_allowance = 2**256 - 1
 
         for dex, info in DEX_ROUTERS.items():
-            print(f"\nChecking approvals for {dex.upper()} router ({info['address']})...")
+            logging.info(f"\nChecking approvals for {dex.upper()} router ({info['address']})...")
             check_and_approve_token(BASE_CURRENCY_ADDRESS, info['address'], amount_to_approve_wei)
             for token_address in TOKEN_ADDRESSES:
                 token_name = TOKEN_INFO.get(token_address, {}).get('name', token_address)
-                print(f"  - Approving target token: {token_name} ({token_address})")
+                logging.info(f"  - Approving target token: {token_name} ({token_address})")
                 check_and_approve_token(token_address, info['address'], unlimited_allowance)
             time.sleep(1)
-        print("--- Initial Approval Checks Complete ---\n")
+        logging.info("--- Initial Approval Checks Complete ---\n")
 
-    print("--- Initial Pool Liquidity & Volume Check ---")
+    logging.info("--- Initial Pool Liquidity & Volume Check ---")
     for token_address in TOKEN_ADDRESSES:
         try:
             api_url = f"https://api.dexscreener.com/latest/dex/tokens/{token_address}"
@@ -115,22 +118,22 @@ def main():
 
             if not j or not j.get('pairs'):
                 token_name = TOKEN_INFO.get(token_address, {}).get('name', token_address)
-                print(f"\nToken: {token_name} ({token_address}) - No pairs found.")
+                logging.info(f"\nToken: {token_name} ({token_address}) - No pairs found.")
                 continue
 
             token_name = TOKEN_INFO.get(token_address, {}).get('name', token_address)
-            print(f"\n--- Token: {token_name} ({token_address}) ---")
+            logging.info(f"\n--- Token: {token_name} ({token_address}) ---")
             for p in j['pairs']:
                 liquidity_usd = p.get('liquidity', {}).get('usd', 0)
                 volume_h24 = p.get('volume', {}).get('h24', 0)
-                print(f"  - DEX: {p['dexId']:<15} | Pool: {p['pairAddress']} | Liq: ${liquidity_usd:12,.2f} | Vol: ${volume_h24:12,.2f}")
+                logging.info(f"  - DEX: {p['dexId']:<15} | Pool: {p['pairAddress']} | Liq: ${liquidity_usd:12,.2f} | Vol: ${volume_h24:12,.2f}")
         except Exception as e:
-            print(f"\nCould not fetch initial pool data for {token_address}: {e}")
-    print("-" * 50)
+            logging.error(f"\nCould not fetch initial pool data for {token_address}: {e}")
+    logging.info("-" * 50)
 
-    print(f"Starting arbitrage analysis for tokens: {TOKEN_ADDRESSES}")
-    print(f"Polling API every {POLL_INTERVAL:.2f} seconds for each token.")
-    print("-" * 50)
+    logging.info(f"Starting arbitrage analysis for tokens: {TOKEN_ADDRESSES}")
+    logging.info(f"Polling API every {POLL_INTERVAL:.2f} seconds for each token.")
+    logging.info("-" * 50)
 
     # Initialize banner log and reserve space on screen
     for token_address in TOKEN_ADDRESSES:
@@ -216,4 +219,4 @@ if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        print("\nProgram stopped by user.")
+        logging.info("\nProgram stopped by user.")

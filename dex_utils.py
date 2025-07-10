@@ -1,4 +1,5 @@
 import time
+import logging
 from config import w3, account, PRIVATE_KEY, MAX_GAS_LIMIT
 from abi import ERC20_ABI
 
@@ -12,7 +13,7 @@ def get_token_info(token_address):
     except Exception as e:
         # Some tokens might not have string name/symbol, or might fail for other reasons.
         # Fallback to using address for identification.
-        print(f"  - WARNING: Could not fetch name/symbol for {token_address}. Error: {str(e)[:100]}")
+        logging.warning(f"  - Could not fetch name/symbol for {token_address}. Error: {str(e)[:100]}")
         symbol_fallback = f"[{token_address[-6:]}]"
         return {'symbol': symbol_fallback, 'name': token_address}
 
@@ -31,7 +32,7 @@ def find_router_info(dex_id, routers):
             possible_matches.append(info)
 
     if not possible_matches:
-        print(f"DEBUG: No router match found for dex_id '{dex_id}'. Available router keys: {list(routers.keys())}")
+        logging.debug(f"No router match found for dex_id '{dex_id}'. Available router keys: {list(routers.keys())}")
         return None
 
     if len(possible_matches) == 1:
@@ -39,7 +40,7 @@ def find_router_info(dex_id, routers):
 
     # If multiple matches are found (e.g., uniswap_v2 and uniswap_v3 for 'uniswap'),
     # prefer the one with the highest version number.
-    print(f"DEBUG: Found multiple possible routers for '{dex_id}'. Selecting highest version.")
+    logging.debug(f"Found multiple possible routers for '{dex_id}'. Selecting highest version.")
     possible_matches.sort(key=lambda x: x.get('version', 0), reverse=True)
     return possible_matches[0]
 
@@ -49,17 +50,17 @@ def check_and_approve_token(token_address, spender_address, amount_to_approve_we
     
     token_contract = w3.eth.contract(address=token_address, abi=ERC20_ABI)
     
-    print(f"Checking allowance for {spender_address} to spend {token_address}...")
+    logging.info(f"Checking allowance for {spender_address} to spend {token_address}...")
     allowance = token_contract.functions.allowance(account.address, spender_address).call()
     
     if allowance < amount_to_approve_wei:
-        print(f"Allowance is {allowance}. Need {amount_to_approve_wei}. Approving...")
+        logging.info(f"Allowance is {allowance}. Need {amount_to_approve_wei}. Approving...")
         
         try:
             # --- Two-step approval for safety ---
             # If allowance is not 0, some tokens require resetting it to 0 before setting a new value.
             if allowance > 0:
-                print("  - Current allowance is non-zero. Resetting to 0 first to avoid 'unsafe allowance' errors...")
+                logging.info("  - Current allowance is non-zero. Resetting to 0 first to avoid 'unsafe allowance' errors...")
                 
                 max_priority_fee_reset = w3.eth.max_priority_fee
                 base_fee_reset = w3.eth.get_block('latest')['baseFeePerGas']
@@ -79,13 +80,13 @@ def check_and_approve_token(token_address, spender_address, amount_to_approve_we
                 signed_reset_txn = w3.eth.account.sign_transaction(reset_txn, PRIVATE_KEY)
                 reset_tx_hash = w3.eth.send_raw_transaction(signed_reset_txn.raw_transaction)
                 
-                print(f"  - Sent reset approval (to 0). Hash: {reset_tx_hash.hex()}. Waiting for confirmation...")
+                logging.info(f"  - Sent reset approval (to 0). Hash: {reset_tx_hash.hex()}. Waiting for confirmation...")
                 w3.eth.wait_for_transaction_receipt(reset_tx_hash)
-                print("  - Allowance reset to 0 successfully.")
+                logging.info("  - Allowance reset to 0 successfully.")
                 time.sleep(2) # Give the node a moment to sync state
 
             # --- Approve the new amount ---
-            print(f"  - Now approving the new amount: {amount_to_approve_wei}")
+            logging.info(f"  - Now approving the new amount: {amount_to_approve_wei}")
             max_priority_fee = w3.eth.max_priority_fee
             base_fee = w3.eth.get_block('latest')['baseFeePerGas']
             max_fee_per_gas = base_fee * 2 + max_priority_fee
@@ -110,10 +111,10 @@ def check_and_approve_token(token_address, spender_address, amount_to_approve_we
             signed_txn = w3.eth.account.sign_transaction(approve_txn, PRIVATE_KEY)
             tx_hash = w3.eth.send_raw_transaction(signed_txn.raw_transaction)
             
-            print(f"Approval transaction sent. Hash: {tx_hash.hex()}. Waiting for confirmation...")
+            logging.info(f"Approval transaction sent. Hash: {tx_hash.hex()}. Waiting for confirmation...")
             w3.eth.wait_for_transaction_receipt(tx_hash)
-            print(f"Token {token_address} approved for spender {spender_address}.")
+            logging.info(f"Token {token_address} approved for spender {spender_address}.")
         except Exception as e:
-            print(f"  - Could not send approval transaction: {e}")
+            logging.error(f"  - Could not send approval transaction: {e}")
     else:
-        print(f"Sufficient allowance already set. Amount is {allowance}")
+        logging.info(f"Sufficient allowance already set. Amount is {allowance}")
