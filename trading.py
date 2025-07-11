@@ -188,7 +188,7 @@ def _prepare_alien_base_swap(
             logging.warning(f"  - Could not confirm fee for provided pool {pair_address}. Falling back to factory search. Error: {e}")
 
     if not pool_address:
-        logging.info(f"  - No valid pool provided. Querying factory {factory_address} for a pool...")
+        logging.info(f"  - No valid pool provided. Querying factory {factory_address} for a liquid pool...")
         FEE_TIERS = [500, 3000, 10000, 2500, 100]
         zero = "0x" + "00" * 20
         for fee in FEE_TIERS:
@@ -196,12 +196,21 @@ def _prepare_alien_base_swap(
                 lambda: factory.functions.getPool(token_in, token_out, fee).call()
             )
             if addr and addr != zero and w3.eth.get_code(addr):
-                chosen_fee, pool_address = fee, addr
-                logging.info(f"  - Pool {addr} at {fee} bps selected")
-                break
+                # Found a potential pool, now check its liquidity before selecting it.
+                temp_pool = w3.eth.contract(address=addr, abi=ALIEN_BASE_V3_POOL_ABI)
+                try:
+                    liquidity = resilient_rpc_call(lambda: temp_pool.functions.liquidity().call())
+                    if liquidity > 0:
+                        chosen_fee, pool_address = fee, addr
+                        logging.info(f"  - Pool {addr} at {fee} bps with liquidity {liquidity} selected")
+                        break  # Found a valid, liquid pool. Exit the loop.
+                    else:
+                        logging.info(f"  - Pool {addr} at {fee} bps found but has zero liquidity. Skipping.")
+                except Exception as e:
+                    logging.warning(f"  - Could not check liquidity for pool {addr}: {e}. Skipping.")
 
     if not pool_address:
-        raise ValueError(f"No live V3 pool for pair on {dex_name}")
+        raise ValueError(f"No live, liquid V3 pool for pair on {dex_name}")
 
     # ------------------------------------------------------------------ #
     # ② sanity-check pool status (slot0 & liquidity)
@@ -290,7 +299,7 @@ def _prepare_uniswap_v3_swap(
             logging.warning(f"  - Could not confirm fee for provided pool {pair_address}. Falling back to factory search. Error: {e}")
 
     if not pool_address:
-        logging.info(f"  - No valid pool provided. Querying factory {factory_address} for a pool...")
+        logging.info(f"  - No valid pool provided. Querying factory {factory_address} for a liquid pool...")
         FEE_TIERS = [500, 3000, 10000, 2500, 100]
         zero = "0x" + "00" * 20
         for fee in FEE_TIERS:
@@ -298,12 +307,21 @@ def _prepare_uniswap_v3_swap(
                 lambda: factory.functions.getPool(token_in, token_out, fee).call()
             )
             if addr and addr != zero and w3.eth.get_code(addr):
-                chosen_fee, pool_address = fee, addr
-                logging.info(f"  - Pool {addr} at {fee} bps selected")
-                break
+                # Found a potential pool, now check its liquidity before selecting it.
+                temp_pool = w3.eth.contract(address=addr, abi=_get_v3_pool_abi(dex_name))
+                try:
+                    liquidity = resilient_rpc_call(lambda: temp_pool.functions.liquidity().call())
+                    if liquidity > 0:
+                        chosen_fee, pool_address = fee, addr
+                        logging.info(f"  - Pool {addr} at {fee} bps with liquidity {liquidity} selected")
+                        break  # Found a valid, liquid pool. Exit the loop.
+                    else:
+                        logging.info(f"  - Pool {addr} at {fee} bps found but has zero liquidity. Skipping.")
+                except Exception as e:
+                    logging.warning(f"  - Could not check liquidity for pool {addr}: {e}. Skipping.")
 
     if not pool_address:
-        raise ValueError(f"No live V3 pool for pair on {dex_name}")
+        raise ValueError(f"No live, liquid V3 pool for pair on {dex_name}")
 
     # ------------------------------------------------------------------ #
     # ② sanity-check pool status (slot0 & liquidity)
