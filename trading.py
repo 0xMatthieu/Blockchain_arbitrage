@@ -157,7 +157,8 @@ def _prepare_alien_base_swap(
         amount_in_wei: int,
         token_in: str,
         token_out: str,
-        pair_address: str = None
+        pair_address: str = None,
+        fee_bps_hint: int = None
     ):
     """
     Prepares an Alien Base (Uniswap-V3 fork) style swap.
@@ -180,8 +181,10 @@ def _prepare_alien_base_swap(
         logging.info(f"  - Using provided pool address: {pair_address}")
         pool_contract = w3.eth.contract(address=pair_address, abi=ALIEN_BASE_V3_POOL_ABI)
         try:
-            # Confirm fee tier directly from the provided pool
-            chosen_fee = resilient_rpc_call(lambda: pool_contract.functions.fee().call())
+            pool_fee = resilient_rpc_call(lambda: pool_contract.functions.fee().call())
+            if fee_bps_hint and fee_bps_hint != pool_fee:
+                logging.warning(f"  - Fee mismatch! DexScreener: {fee_bps_hint}, On-chain: {pool_fee}. Trusting on-chain fee.")
+            chosen_fee = pool_fee
             pool_address = pair_address
             logging.info(f"  - Successfully confirmed pool at fee tier {chosen_fee} bps.")
         except Exception as e:
@@ -190,6 +193,9 @@ def _prepare_alien_base_swap(
     if not pool_address:
         logging.info(f"  - No valid pool provided. Querying factory {factory_address} for a liquid pool...")
         FEE_TIERS = [500, 3000, 10000, 2500, 100]
+        if fee_bps_hint and fee_bps_hint in FEE_TIERS:
+            FEE_TIERS.insert(0, FEE_TIERS.pop(FEE_TIERS.index(fee_bps_hint)))
+            logging.info(f"  - Prioritizing fee tier {fee_bps_hint} from DexScreener hint.")
         zero = "0x" + "00" * 20
         for fee in FEE_TIERS:
             addr = resilient_rpc_call(
@@ -268,7 +274,8 @@ def _prepare_uniswap_v3_swap(
         amount_in_wei: int,
         token_in: str,
         token_out: str,
-        pair_address: str = None
+        pair_address: str = None,
+        fee_bps_hint: int = None
     ):
     """
     Prepares a Uniswap-V3 style swap and **never** dies on
@@ -291,8 +298,10 @@ def _prepare_uniswap_v3_swap(
         logging.info(f"  - Using provided pool address: {pair_address}")
         pool_contract = w3.eth.contract(address=pair_address, abi=_get_v3_pool_abi(dex_name))
         try:
-            # Confirm fee tier directly from the provided pool
-            chosen_fee = resilient_rpc_call(lambda: pool_contract.functions.fee().call())
+            pool_fee = resilient_rpc_call(lambda: pool_contract.functions.fee().call())
+            if fee_bps_hint and fee_bps_hint != pool_fee:
+                logging.warning(f"  - Fee mismatch! DexScreener: {fee_bps_hint}, On-chain: {pool_fee}. Trusting on-chain fee.")
+            chosen_fee = pool_fee
             pool_address = pair_address
             logging.info(f"  - Successfully confirmed pool at fee tier {chosen_fee} bps.")
         except Exception as e:
@@ -301,6 +310,9 @@ def _prepare_uniswap_v3_swap(
     if not pool_address:
         logging.info(f"  - No valid pool provided. Querying factory {factory_address} for a liquid pool...")
         FEE_TIERS = [500, 3000, 10000, 2500, 100]
+        if fee_bps_hint and fee_bps_hint in FEE_TIERS:
+            FEE_TIERS.insert(0, FEE_TIERS.pop(FEE_TIERS.index(fee_bps_hint)))
+            logging.info(f"  - Prioritizing fee tier {fee_bps_hint} from DexScreener hint.")
         zero = "0x" + "00" * 20
         for fee in FEE_TIERS:
             addr = resilient_rpc_call(
@@ -498,14 +510,14 @@ def execute_trade(buy_pool, sell_pool, spread, token_address, token_info):
         if router_type == '1inch':
             swap_function, _ = _prepare_1inch_swap(buy_router_info, amount_in_wei, BASE_CURRENCY_ADDRESS, token_address)
         elif router_type == 'alienbase':
-            swap_function, _ = _prepare_alien_base_swap(buy_dex_name, buy_router_info, amount_in_wei, BASE_CURRENCY_ADDRESS, token_address, pair_address=buy_pool['pairAddress'])
+            swap_function, _ = _prepare_alien_base_swap(buy_dex_name, buy_router_info, amount_in_wei, BASE_CURRENCY_ADDRESS, token_address, pair_address=buy_pool['pairAddress'], fee_bps_hint=buy_pool.get('feeBps'))
         elif buy_router_info['version'] == 2:
             if router_type == 'solidly':
                 swap_function, _ = _prepare_solidly_swap(buy_dex_name, buy_router_info, amount_in_wei, BASE_CURRENCY_ADDRESS, token_address, pair_address=buy_pool['pairAddress'])
             else: # Default to uniswapv2
                 swap_function, _ = _prepare_uniswap_v2_swap(buy_router_info, amount_in_wei, [BASE_CURRENCY_ADDRESS, token_address], pair_address=buy_pool['pairAddress'])
         elif buy_router_info['version'] == 3:
-            swap_function, _ = _prepare_uniswap_v3_swap(buy_dex_name, buy_router_info, amount_in_wei, BASE_CURRENCY_ADDRESS, token_address, pair_address=buy_pool['pairAddress'])
+            swap_function, _ = _prepare_uniswap_v3_swap(buy_dex_name, buy_router_info, amount_in_wei, BASE_CURRENCY_ADDRESS, token_address, pair_address=buy_pool['pairAddress'], fee_bps_hint=buy_pool.get('feeBps'))
         else:
             raise NotImplementedError(f"DEX version {buy_router_info['version']} or type '{router_type}' is not supported for buys.")
         
@@ -550,14 +562,14 @@ def execute_trade(buy_pool, sell_pool, spread, token_address, token_info):
         if router_type_sell == '1inch':
             sell_swap_function, _ = _prepare_1inch_swap(sell_router_info, amount_received_wei, token_address, BASE_CURRENCY_ADDRESS)
         elif router_type_sell == 'alienbase':
-            sell_swap_function, _ = _prepare_alien_base_swap(sell_dex_name, sell_router_info, amount_received_wei, token_address, BASE_CURRENCY_ADDRESS, pair_address=sell_pool['pairAddress'])
+            sell_swap_function, _ = _prepare_alien_base_swap(sell_dex_name, sell_router_info, amount_received_wei, token_address, BASE_CURRENCY_ADDRESS, pair_address=sell_pool['pairAddress'], fee_bps_hint=sell_pool.get('feeBps'))
         elif sell_router_info['version'] == 2:
             if router_type_sell == 'solidly':
                 sell_swap_function, _ = _prepare_solidly_swap(sell_dex_name, sell_router_info, amount_received_wei, token_address, BASE_CURRENCY_ADDRESS, pair_address=sell_pool['pairAddress'])
             else: # Default to uniswapv2
                 sell_swap_function, _ = _prepare_uniswap_v2_swap(sell_router_info, amount_received_wei, [token_address, BASE_CURRENCY_ADDRESS], pair_address=sell_pool['pairAddress'])
         elif sell_router_info['version'] == 3:
-            sell_swap_function, _ = _prepare_uniswap_v3_swap(sell_dex_name, sell_router_info, amount_received_wei, token_address, BASE_CURRENCY_ADDRESS, pair_address=sell_pool['pairAddress'])
+            sell_swap_function, _ = _prepare_uniswap_v3_swap(sell_dex_name, sell_router_info, amount_received_wei, token_address, BASE_CURRENCY_ADDRESS, pair_address=sell_pool['pairAddress'], fee_bps_hint=sell_pool.get('feeBps'))
         else:
             raise NotImplementedError(f"DEX version {sell_router_info['version']} or type '{router_type_sell}' is not supported for sells.")
 
