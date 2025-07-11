@@ -36,7 +36,7 @@ def analyze_and_trade(pairs, token_address):
         # after filtering in main(). `pairs` will have 0 or 1 item.
         token_symbol = TOKEN_INFO.get(token_address, {}).get('symbol', f"[{token_address[-6:]}]")
         pair_symbol = pairs[0]['pair'] if pairs else token_symbol
-        logging.info(f"{pair_symbol:<20} | Not enough valid pools to analyze. Waiting...")
+        #logging.info(f"{pair_symbol:<20} | Not enough valid pools to analyze. Waiting...")
         return
 
     # sort by quoted token price
@@ -61,7 +61,7 @@ def analyze_and_trade(pairs, token_address):
         f"{sell_pool['dex'].upper()} (sell, fee {sell_fee*100:.2f}%) | "
         f"Spread: {spread:6.2f}%"
     )
-    logging.info(banner)
+    #logging.info(banner)
     # -------------------------------------------------------------
 
     if spread >= MIN_SPREAD_PERCENT:
