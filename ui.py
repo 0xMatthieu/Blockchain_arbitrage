@@ -19,6 +19,7 @@ st.set_page_config(
 if 'bot_started' not in st.session_state:
     st.session_state.bot_started = False
     st.session_state.bot_thread = None
+    st.session_state.bot_instance = None
     st.session_state.spread_info = {}
     st.session_state.log_stream = io.StringIO()
 
@@ -38,6 +39,7 @@ def start_bot():
         st.session_state.bot_started = True
         
         bot = ArbitrageBot(st.session_state.spread_info)
+        st.session_state.bot_instance = bot
         
         st.session_state.bot_thread = threading.Thread(
             target=bot_target_with_logging,
@@ -48,10 +50,28 @@ def start_bot():
         st.toast("Bot started!", icon="🚀")
         st.rerun()
 
+def stop_bot():
+    if st.session_state.bot_started and st.session_state.bot_instance:
+        st.toast("Stopping bot...", icon="🛑")
+        st.session_state.bot_instance.stop()
+        st.session_state.bot_thread.join(timeout=5)
+
+        # Reset state
+        st.session_state.bot_started = False
+        st.session_state.bot_thread = None
+        st.session_state.bot_instance = None
+        st.session_state.spread_info = {}
+        st.session_state.log_stream = io.StringIO()
+        
+        st.toast("Bot stopped!", icon="✔️")
+        st.rerun()
+
 # --- UI Layout ---
 st.title("🤖 DEX Arbitrage Bot Dashboard")
 
-st.sidebar.button("Start Bot", on_click=start_bot, disabled=st.session_state.bot_started, use_container_width=True)
+col1, col2 = st.sidebar.columns(2)
+col1.button("Start Bot", on_click=start_bot, disabled=st.session_state.bot_started, use_container_width=True)
+col2.button("Stop Bot", on_click=stop_bot, disabled=not st.session_state.bot_started, use_container_width=True)
 
 if not st.session_state.bot_started:
     st.info("Bot is not running. Click 'Start Bot' in the sidebar to begin.")

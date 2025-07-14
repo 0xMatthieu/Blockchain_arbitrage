@@ -8,13 +8,10 @@ from config import (
     MIN_LIQUIDITY_USD, MIN_VOLUME_USD, MIN_SPREAD_PERCENT, POLL_INTERVAL, POLL_INTERVAL_ERROR, TRADE_COOLDOWN_SECONDS,
     TRADE_AMOUNT_BASE_TOKEN, V2_FEE_BPS, V3_FEE_MAP, RPC_MAX_RETRIES, RPC_BACKOFF_FACTOR
 )
-from abi import ERC20_ABI, SOLIDLY_PAIR_ABI, UNISWAP_V3_POOL_ABI, PANCAKE_V3_POOL_ABI
-from dex_utils import check_and_approve_token, find_router_info
+from abi import ERC20_ABI
+from dex_utils import check_and_approve_token
 from trading import execute_trade
 from logging_config import setup_logging
-from web3.exceptions import ContractLogicError
-from eth_abi import decode
-from hexbytes import HexBytes
 
 
 class ArbitrageBot:
@@ -23,55 +20,9 @@ class ArbitrageBot:
         self.TOKEN_INFO = {}
         self.latest_spread_info = shared_spread_info_dict
         self.running = True
-        self.watched_pools = {}
 
     def stop(self):
         self.running = False
-
-    def _get_v3_pool_abi(self, dex_name):
-        if 'pancake' in dex_name.lower():
-            return PANCAKE_V3_POOL_ABI
-        return UNISWAP_V3_POOL_ABI
-
-    def _get_onchain_price(self, pool_details):
-        try:
-            pair_address = w3.to_checksum_address(pool_details['pairAddress'])
-            router_info = find_router_info(pool_details['dexId'], DEX_ROUTERS)
-            if not router_info:
-                # This can happen if the dexId is a raw address
-                 router_info = find_router_info(self._get_dex_name_from_id(pool_details['dexId']), DEX_ROUTERS)
-            
-            if not router_info:
-                logging.warning(f"Could not find router info for dexId {pool_details['dexId']}")
-                return None
-
-            version = router_info.get('version', 2)
-            base_t = w3.to_checksum_address(pool_details['baseToken']['address'])
-            quote_t = w3.to_checksum_address(pool_details['quoteToken']['address'])
-
-            if version == 3:
-                pool_contract = w3.eth.contract(address=pair_address, abi=self._get_v3_pool_abi(pool_details['dexId']))
-                sqrt_price_x96, *_ = pool_contract.functions.slot0().call()
-                if sqrt_price_x96 == 0: return None
-                
-                (token0, _) = (base_t, quote_t) if int(base_t, 16) < int(quote_t, 16) else (quote_t, base_t)
-                price_token1_div_token0 = (sqrt_price_x96 / 2**96)**2
-                
-                return price_token1_div_token0 if base_t != token0 else (1 / price_token1_div_token0 if price_token1_div_token0 else 0)
-
-            elif version == 2:
-                pool_contract = w3.eth.contract(address=pair_address, abi=SOLIDLY_PAIR_ABI)
-                reserves = pool_contract.functions.getReserves().call()
-                reserve0, reserve1 = reserves[0], reserves[1]
-                if reserve0 == 0 or reserve1 == 0: return None
-
-                (token0, _) = (base_t, quote_t) if int(base_t, 16) < int(quote_t, 16) else (quote_t, base_t)
-                return (reserve0 / reserve1) if base_t != token0 else (reserve1 / reserve0)
-            else:
-                return None
-        except Exception as e:
-            logging.error(f"Failed to get on-chain price for pool {pool_details.get('pairAddress')}: {e}")
-            return None
 
     def _get_dex_name_from_id(self, dex_id):
         if dex_id in DEX_ROUTERS: return dex_id
@@ -124,70 +75,45 @@ class ArbitrageBot:
 
         if account: logging.info(f"Bot wallet address: {account.address}")
         
-        logging.info("--- Discovering pools and fetching initial data via DexScreener ---")
-        try:
-            for token_address in TOKEN_ADDRESSES:
+        logging.info("--- Discovering pools and fetching initial token info via DexScreener ---")
+        for token_address in TOKEN_ADDRESSES:
+            try:
                 api_url = f"https://api.dexscreener.com/latest/dex/tokens/{token_address}"
                 logging.info(f"Querying for token: {token_address}")
                 response = requests.get(api_url)
                 response.raise_for_status()
                 j = response.json()
                 
-                all_discovered_pairs = j.get('pairs', [])
-                if not all_discovered_pairs:
+                pairs = j.get('pairs', [])
+                if not pairs:
                     logging.warning(f"  -> No pairs found for {token_address}")
-                    time.sleep(1) # a small sleep to avoid hammering the API
+                    time.sleep(1)
                     continue
                 
-                # Process the discovered pairs for the current token
-                for p in all_discovered_pairs:
-                    base_token_addr = w3.to_checksum_address(p['baseToken']['address'])
-                    if base_token_addr != token_address: continue
-                    
-                    liquidity_usd = p.get('liquidity', {}).get('usd', 0)
-                    volume_h24 = p.get('volume', {}).get('h24', 0)
-                    if not (p.get('priceNative') and p.get('quoteToken') and p.get('quoteToken').get('address') and
-                            w3.to_checksum_address(p['quoteToken']['address']) == BASE_CURRENCY_ADDRESS and
-                            liquidity_usd >= MIN_LIQUIDITY_USD and volume_h24 >= MIN_VOLUME_USD):
-                        continue
+                # Use the first pair to get token info
+                first_pair = pairs[0]
+                self.TOKEN_INFO[token_address] = {
+                    'name': first_pair['baseToken']['name'],
+                    'symbol': first_pair['baseToken']['symbol']
+                }
+                logging.info(f"  -> Found token: {self.TOKEN_INFO[token_address]['name']} ({self.TOKEN_INFO[token_address]['symbol']})")
+                time.sleep(1)
 
-                    if base_token_addr not in self.TOKEN_INFO:
-                        self.TOKEN_INFO[base_token_addr] = {'name': p['baseToken']['name'], 'symbol': p['baseToken']['symbol']}
-                    
-                    if base_token_addr not in self.watched_pools:
-                        self.watched_pools[base_token_addr] = []
-
-                    price_native = float(p['priceNative'])
-                    price_usd = float(p['priceUsd'])
-                    base_currency_price_usd = price_usd / price_native if price_native > 1e-18 else 0
-
-                    pool_details = {
-                        'dexId': p['dexId'], 'pairAddress': p['pairAddress'], 'feeBps': p.get('feeBps', 0),
-                        'pair': f"{p['baseToken']['symbol']}/{p['quoteToken']['symbol']}",
-                        'baseToken': p['baseToken'], 'quoteToken': p['quoteToken'],
-                        'liq_usd': liquidity_usd, 'base_currency_price_usd': base_currency_price_usd,
-                        'dex': p['dexId']
-                    }
-                    self.watched_pools[base_token_addr].append(pool_details)
-                
-                # Give feedback on what was discovered for the token
-                token_info = self.TOKEN_INFO.get(token_address)
-                if token_info:
-                    logging.info(f"--- Watching: {token_info['name']} ({token_info['symbol']}) ---")
-                    if not self.watched_pools.get(token_address):
-                        logging.info("  -> No valid pools found meeting criteria.")
-                    else:
-                        for pool in self.watched_pools.get(token_address, []):
-                            dex_name = self._get_dex_name_from_id(pool['dexId'])
-                            logging.info(f"  - Discovered: {dex_name:<15} | Pool: {pool['pairAddress']} | Liq: ${pool['liq_usd']:12,.2f}")
-                
-                time.sleep(1) # a small sleep to avoid hammering the API
-
-        except Exception as e:
-            logging.error(f"\nCould not fetch initial token/pool data: {e}", exc_info=True)
+            except requests.exceptions.HTTPError as http_err:
+                if hasattr(http_err, 'response') and http_err.response.status_code == 429:
+                    logging.warning(f"  -> Rate limited for token {token_address}. Skipping for now and sleeping.")
+                    time.sleep(5)
+                else:
+                    logging.error(f"  -> HTTP error for token {token_address}: {http_err}")
+            except Exception as e:
+                logging.error(f"\nCould not fetch initial data for {token_address}: {e}")
+        
+        if not self.TOKEN_INFO:
+            logging.error("Could not discover any tokens. Stopping bot.")
             return
-        logging.info("-" * 50)
 
+        logging.info("-" * 50)
+        
         if check_dex:
             logging.info("--- Running Initial Approval Checks ---")
             base_token_contract = w3.eth.contract(address=BASE_CURRENCY_ADDRESS, abi=ERC20_ABI)
@@ -204,7 +130,7 @@ class ArbitrageBot:
                 time.sleep(1)
             logging.info("--- Initial Approval Checks Complete ---\n")
 
-        logging.info("Starting on-chain polling for arbitrage analysis...")
+        logging.info("Starting DexScreener polling for arbitrage analysis...")
         logging.info(f"Polling every {POLL_INTERVAL:.2f} seconds.")
         logging.info("-" * 50)
         last_summary_print_time = time.time()
@@ -213,32 +139,76 @@ class ArbitrageBot:
             if time.time() - last_summary_print_time >= 60:
                 logging.info("--- Best Current Spread Summary (1 min) ---")
                 if self.latest_spread_info:
-                    for token_addr in self.watched_pools:
+                    for token_addr in self.TOKEN_INFO:
                         logging.info(self.latest_spread_info.get(token_addr, f"Waiting for data on {self.TOKEN_INFO[token_addr]['symbol']}..."))
                 else: logging.info("No spread data yet. Waiting for polls...")
                 logging.info("-" * 50)
                 last_summary_print_time = time.time()
 
-            for token_address, pools in self.watched_pools.items():
-                token_symbol = self.TOKEN_INFO[token_address]['symbol']
-                valid_pairs_for_token = []
-                for pool_details in pools:
-                    price = self._get_onchain_price(pool_details)
-                    if price is not None:
-                        pair_for_analysis = pool_details.copy()
-                        pair_for_analysis['price'] = price
-                        valid_pairs_for_token.append(pair_for_analysis)
+            try:
+                # Batch API call for all tokens at once
+                token_list_str = ",".join(self.TOKEN_INFO.keys())
+                api_url = f"https://api.dexscreener.com/latest/dex/tokens/{token_list_str}"
+                response = requests.get(api_url)
+                response.raise_for_status()
+                j = response.json()
                 
-                if valid_pairs_for_token:
-                    self.analyze_and_trade(valid_pairs_for_token, token_address)
-                else:
-                    logging.info(f"[{token_symbol}] Could not fetch any on-chain prices for discovered pools this cycle.")
+                all_pairs = j.get('pairs', [])
+                if not all_pairs:
+                    logging.info("No pairs found in batched API response.")
+                    time.sleep(POLL_INTERVAL)
+                    continue
                 
-            # Distribute polling over the interval to avoid bursting RPC calls
-            if len(self.watched_pools) > 0:
-                time.sleep(POLL_INTERVAL / len(self.watched_pools))
-            else:
-                time.sleep(POLL_INTERVAL)
+                pairs_by_token = {addr: [] for addr in self.TOKEN_INFO}
+                for p in all_pairs:
+                    base_token_addr = w3.to_checksum_address(p['baseToken']['address'])
+                    if base_token_addr in pairs_by_token:
+                        pairs_by_token[base_token_addr].append(p)
+
+                for token_address, current_pairs_raw in pairs_by_token.items():
+                    token_symbol = self.TOKEN_INFO[token_address]['symbol']
+                    
+                    if not current_pairs_raw:
+                        logging.info(f"[{token_symbol}] No pairs found for this token in batched response.")
+                        continue
+                        
+                    valid_pairs = []
+                    for p in current_pairs_raw:
+                        liquidity_usd = p.get('liquidity', {}).get('usd', 0)
+                        volume_h24 = p.get('volume', {}).get('h24', 0)
+
+                        if (p.get('priceNative') and p.get('quoteToken') and p.get('quoteToken').get('address') and
+                            w3.to_checksum_address(p['quoteToken']['address']) == BASE_CURRENCY_ADDRESS and
+                            liquidity_usd >= MIN_LIQUIDITY_USD and
+                            volume_h24 >= MIN_VOLUME_USD):
+                            
+                            price_native = float(p['priceNative'])
+                            price_usd = float(p['priceUsd'])
+                            base_currency_price_usd = price_usd / price_native if price_native > 1e-18 else 0
+
+                            valid_pairs.append({
+                                'dex': p['dexId'], 'chain' : p['chainId'],
+                                'pair': f"{p['baseToken']['symbol']}/{p['quoteToken']['symbol']}",
+                                'price': price_native, 'liq_usd': liquidity_usd,
+                                'pairAddress': p['pairAddress'], 'feeBps': p.get('feeBps', 0),
+                                'base_currency_price_usd': base_currency_price_usd,
+                                'dexId': p['dexId']
+                            })
+                    
+                    if valid_pairs:
+                        self.analyze_and_trade(valid_pairs, token_address)
+                    else:
+                        pair_symbol = f"{current_pairs_raw[0]['baseToken']['symbol']}/{current_pairs_raw[0]['quoteToken']['symbol']}"
+                        logging.info(f"[{token_symbol}] {pair_symbol:<20} | No valid/liquid pools found.")
+            
+            except requests.exceptions.RequestException as e:
+                logging.warning(f"API Error during batch poll: {e}")
+                time.sleep(POLL_INTERVAL_ERROR)
+            except Exception as e:
+                logging.error(f"App Error during batch poll: {e}", exc_info=True)
+                time.sleep(POLL_INTERVAL_ERROR)
+
+            time.sleep(POLL_INTERVAL)
 
 
 if __name__ == "__main__":
