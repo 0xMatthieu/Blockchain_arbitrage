@@ -9,7 +9,7 @@ from config import (
     TRADE_AMOUNT_BASE_TOKEN, V2_FEE_BPS, V3_FEE_MAP
 )
 from abi import ERC20_ABI
-from dex_utils import check_and_approve_token, get_token_info
+from dex_utils import check_and_approve_token
 from trading import execute_trade
 from logging_config import setup_logging
 
@@ -88,12 +88,8 @@ class ArbitrageBot:
         if account:
             logging.info(f"Bot wallet address: {account.address}")
 
-        logging.info("\n--- Fetching Watched Token Information ---")
-        for addr in TOKEN_ADDRESSES:
-            info = get_token_info(addr)
-            self.TOKEN_INFO[addr] = info
-            logging.info(f"  - Watching: {info['name']} ({info['symbol']})")
-        logging.info("----------------------------------------\n")
+        # This section is being integrated into the initial liquidity check
+        # to use a single batched API call.
 
         if check_dex:
             logging.info("--- Running Initial Approval Checks ---")
@@ -112,7 +108,7 @@ class ArbitrageBot:
                 time.sleep(1)
             logging.info("--- Initial Approval Checks Complete ---\n")
 
-        logging.info("--- Initial Pool Liquidity & Volume Check ---")
+        logging.info("--- Fetching Initial Token Info & Pool Liquidity/Volume ---")
         try:
             token_list_str = ",".join(TOKEN_ADDRESSES)
             api_url = f"https://api.dexscreener.com/latest/dex/tokens/{token_list_str}"
@@ -125,15 +121,26 @@ class ArbitrageBot:
                 for p in j['pairs']:
                     base_token_addr = w3.to_checksum_address(p['baseToken']['address'])
                     if base_token_addr in pairs_by_token:
+                        # Populate TOKEN_INFO if not already done for this address
+                        if base_token_addr not in self.TOKEN_INFO:
+                            self.TOKEN_INFO[base_token_addr] = {
+                                'name': p['baseToken']['name'],
+                                'symbol': p['baseToken']['symbol']
+                            }
                         pairs_by_token[base_token_addr].append(p)
             
             for token_address in TOKEN_ADDRESSES:
-                token_name = self.TOKEN_INFO.get(token_address, {}).get('name', token_address)
-                logging.info(f"\n--- Token: {token_name} ({token_address}) ---")
+                token_info = self.TOKEN_INFO.get(token_address)
+                if not token_info:
+                    logging.warning(f"\n--- Token: {token_address} ---")
+                    logging.warning("  - Could not find any pairs or info for this token in API response. It may not be traded against your BASE_CURRENCY.")
+                    continue
+
+                logging.info(f"\n--- Watching: {token_info['name']} ({token_info['symbol']}) ---")
                 
                 pairs = pairs_by_token.get(token_address)
                 if not pairs:
-                    logging.info("  - No pairs found.")
+                    logging.info("  - No pairs found meeting criteria.")
                     continue
 
                 for p in pairs:
@@ -143,7 +150,7 @@ class ArbitrageBot:
                     logging.info(f"  - DEX: {dex_name:<15} | Pool: {p['pairAddress']} | Liq: ${liquidity_usd:12,.2f} | Vol: ${volume_h24:12,.2f}")
 
         except Exception as e:
-            logging.error(f"\nCould not fetch initial pool data: {e}")
+            logging.error(f"\nCould not fetch initial token/pool data: {e}")
         logging.info("-" * 50)
 
         logging.info(f"Starting arbitrage analysis for tokens: {TOKEN_ADDRESSES}")
