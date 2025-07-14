@@ -24,6 +24,20 @@ class ArbitrageBot:
     def stop(self):
         self.running = False
 
+    def _get_dex_name_from_id(self, dex_id):
+        """Resolves a DEX ID from DexScreener to a configured name."""
+        # First, check if the dex_id itself is a key (e.g., "uniswap_v3")
+        if dex_id in DEX_ROUTERS:
+            return dex_id
+
+        # If not, build a reverse map (if not cached) and check by address
+        if not hasattr(self, '_dex_reverse_map'):
+            self._dex_reverse_map = {
+                v['address'].lower(): k for k, v in DEX_ROUTERS.items() if 'address' in v
+            }
+        
+        return self._dex_reverse_map.get(dex_id.lower(), dex_id)
+
     def _router_fee_bps(self, pool):
         """Return total fee bps for price quoted by DexScreener item."""
         if pool['dex'] in ('uniswap', 'pancakeswap'):
@@ -50,10 +64,12 @@ class ArbitrageBot:
         effective_sell = sell_pool['price'] * (1 - sell_fee)
         spread = (effective_sell - effective_buy) / effective_buy * 100
 
+        buy_dex_name = self._get_dex_name_from_id(buy_pool['dex'])
+        sell_dex_name = self._get_dex_name_from_id(sell_pool['dex'])
         banner = (
             f"{buy_pool['pair']:<20} | "
-            f"Route: {buy_pool['dex'].upper()} (buy, fee {buy_fee*100:.2f}%) -> "
-            f"{sell_pool['dex'].upper()} (sell, fee {sell_fee*100:.2f}%) | "
+            f"Route: {buy_dex_name.upper()} (buy, fee {buy_fee*100:.2f}%) -> "
+            f"{sell_dex_name.upper()} (sell, fee {sell_fee*100:.2f}%) | "
             f"Spread: {spread:6.2f}%"
         )
         self.latest_spread_info[token_address] = banner
@@ -125,6 +141,7 @@ class ArbitrageBot:
 
         last_summary_print_time = time.time()
         while self.running:
+            # --- Periodic Summary ---
             if time.time() - last_summary_print_time >= 60:
                 logging.info("--- Best Current Spread Summary (1 min) ---")
                 if self.latest_spread_info:
@@ -136,56 +153,77 @@ class ArbitrageBot:
                 logging.info("-" * 50)
                 last_summary_print_time = time.time()
 
-            for token_address in TOKEN_ADDRESSES:
-                token_symbol = self.TOKEN_INFO.get(token_address, {}).get('symbol', f"[{token_address[-6:]}]")
-                try:
-                    api_url = f"https://api.dexscreener.com/latest/dex/tokens/{token_address}"
-                    response = requests.get(api_url)
-                    response.raise_for_status()
-                    j = response.json()
-                    
-                    if not j or not j.get('pairs'):
-                        logging.info(f"[{token_symbol}] No pairs found in API response.")
-                        current_pairs = []
-                    else:
-                        current_pairs = []
-                        for p in j['pairs']:
-                            liquidity_usd = p.get('liquidity', {}).get('usd', 0)
-                            volume_h24 = p.get('volume', {}).get('h24', 0)
-
-                            if (p.get('priceNative') and p.get('quoteToken') and p.get('quoteToken').get('address') and
-                                w3.to_checksum_address(p['quoteToken']['address']) == BASE_CURRENCY_ADDRESS and
-                                liquidity_usd >= MIN_LIQUIDITY_USD and
-                                volume_h24 >= MIN_VOLUME_USD):
-                                
-                                price_native = float(p['priceNative'])
-                                price_usd = float(p['priceUsd'])
-                                base_currency_price_usd = 0
-                                if price_native > 1e-18:
-                                    base_currency_price_usd = price_usd / price_native
-
-                                current_pairs.append({
-                                    'dex': p['dexId'], 'chain' : p['chainId'],
-                                    'pair': f"{p['baseToken']['symbol']}/{p['quoteToken']['symbol']}",
-                                    'price': price_native, 'liq_usd': liquidity_usd,
-                                    'pairAddress': p['pairAddress'], 'feeBps': p.get('feeBps', 0),
-                                    'base_currency_price_usd': base_currency_price_usd
-                                })
-                    
-                    if current_pairs:
-                        self.analyze_and_trade(current_pairs, token_address)
-                    elif j and j.get('pairs'):
-                        pair_symbol = f"{j['pairs'][0]['baseToken']['symbol']}/{j['pairs'][0]['quoteToken']['symbol']}"
-                        logging.info(f"{pair_symbol:<20} | No valid/liquid pools found.")
-
-                except requests.exceptions.RequestException as e:
-                    logging.warning(f"[{token_symbol}] API Error: {str(e)[:80]}")
-                    time.sleep(POLL_INTERVAL_ERROR)
-                except Exception as e:
-                    logging.error(f"[{token_symbol}] App Error: {str(e)[:80]}")
-                    time.sleep(POLL_INTERVAL_ERROR)
+            # --- Main Polling Logic ---
+            try:
+                # Batch API call for all tokens at once
+                token_list_str = ",".join(TOKEN_ADDRESSES)
+                api_url = f"https://api.dexscreener.com/latest/dex/tokens/{token_list_str}"
+                response = requests.get(api_url)
+                response.raise_for_status()
+                j = response.json()
                 
-                time.sleep(POLL_INTERVAL)
+                if not j or not j.get('pairs'):
+                    logging.info("No pairs found in batched API response.")
+                    all_pairs = []
+                else:
+                    all_pairs = j['pairs']
+                
+                # Group pairs by their base token address
+                pairs_by_token = {addr: [] for addr in TOKEN_ADDRESSES}
+                for p in all_pairs:
+                    base_token_addr = w3.to_checksum_address(p['baseToken']['address'])
+                    if base_token_addr in pairs_by_token:
+                        pairs_by_token[base_token_addr].append(p)
+
+                # Analyze each token with its filtered list of pairs
+                for token_address in TOKEN_ADDRESSES:
+                    token_symbol = self.TOKEN_INFO.get(token_address, {}).get('symbol', f"[{token_address[-6:]}]")
+                    
+                    current_pairs_raw = pairs_by_token.get(token_address, [])
+                    if not current_pairs_raw:
+                        logging.info(f"[{token_symbol}] No pairs found for this token in batched response.")
+                        continue
+                        
+                    # Pre-filter pools based on liquidity and volume
+                    valid_pairs = []
+                    for p in current_pairs_raw:
+                        liquidity_usd = p.get('liquidity', {}).get('usd', 0)
+                        volume_h24 = p.get('volume', {}).get('h24', 0)
+
+                        if (p.get('priceNative') and p.get('quoteToken') and p.get('quoteToken').get('address') and
+                            w3.to_checksum_address(p['quoteToken']['address']) == BASE_CURRENCY_ADDRESS and
+                            liquidity_usd >= MIN_LIQUIDITY_USD and
+                            volume_h24 >= MIN_VOLUME_USD):
+                            
+                            price_native = float(p['priceNative'])
+                            price_usd = float(p['priceUsd'])
+                            base_currency_price_usd = 0
+                            if price_native > 1e-18:
+                                base_currency_price_usd = price_usd / price_native
+
+                            valid_pairs.append({
+                                'dex': p['dexId'], 'chain' : p['chainId'],
+                                'pair': f"{p['baseToken']['symbol']}/{p['quoteToken']['symbol']}",
+                                'price': price_native, 'liq_usd': liquidity_usd,
+                                'pairAddress': p['pairAddress'], 'feeBps': p.get('feeBps', 0),
+                                'base_currency_price_usd': base_currency_price_usd
+                            })
+                    
+                    if valid_pairs:
+                        self.analyze_and_trade(valid_pairs, token_address)
+                    else:
+                        pair_symbol = f"{current_pairs_raw[0]['baseToken']['symbol']}/{current_pairs_raw[0]['quoteToken']['symbol']}"
+                        logging.info(f"[{token_symbol}] {pair_symbol:<20} | No valid/liquid pools found.")
+
+            except requests.exceptions.RequestException as e:
+                logging.warning(f"API Error during batch poll: {str(e)[:100]}")
+                time.sleep(POLL_INTERVAL_ERROR)
+            except Exception as e:
+                logging.error(f"App Error during batch poll: {str(e)[:100]}", exc_info=True)
+                time.sleep(POLL_INTERVAL_ERROR)
+            
+            # Wait for the next polling cycle
+            time.sleep(POLL_INTERVAL)
 
 
 if __name__ == "__main__":
