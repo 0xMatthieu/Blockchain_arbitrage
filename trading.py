@@ -19,44 +19,6 @@ from eth_abi import decode        # already inside web3’s deps
 from hexbytes import HexBytes
 from web3.exceptions import ContractLogicError
 
-def resilient_rpc_call(callable_func):
-    """
-    Execute `callable_func` with exponential back-off for retries.
-    This function handles RPC errors, including silent reverts from Quoters.
-    """
-    _QUOTER_V2_RET_TYPES = ["uint256", "uint160", "uint32", "uint256"]
-    last_exception = None
-
-    for i in range(RPC_MAX_RETRIES):
-        try:
-            return callable_func()
-        except ContractLogicError as err:
-            last_exception = err
-            # Try to decode a Quoter V2-style revert with data payload
-            payload = err.args[0].get("data") if err.args and isinstance(err.args[0], dict) else None
-            if payload and len(payload) > 4:
-                logging.warning("  - [RPC] Call reverted with data. Attempting to decode as Quoter V2 response.")
-                data_bytes = HexBytes(payload)[4:] if len(payload) % 32 else HexBytes(payload)
-                decoded = decode(_QUOTER_V2_RET_TYPES, data_bytes.ljust(32 * 4, b"\0"))
-                logging.info(f"  - [RPC] Decoded amountOut: {decoded[0]}")
-                return decoded[0]
-            # For empty reverts or other logic errors, fall through to retry
-        except Exception as err:
-            last_exception = err
-            # Fall through to retry for any other exception type
-
-        # If we are here, an exception occurred that was not a decodable Quoter revert.
-        # We will wait and retry.
-        if i < RPC_MAX_RETRIES - 1:
-            wait = RPC_BACKOFF_FACTOR * (2 ** i)
-            logging.warning(f"\n  - [RPC] Call failed: {last_exception}. Retrying in {wait:.2f}s ({i + 1}/{RPC_MAX_RETRIES})")
-            time.sleep(wait)
-        else:
-            logging.error(f"  - [RPC] Call failed after {RPC_MAX_RETRIES} retries.")
-
-    # After all retries, raise the last captured exception.
-    raise Exception(f"RPC call failed after {RPC_MAX_RETRIES} retries.") from last_exception
-
 def _get_v3_pool_abi(dex_name):
     """Selects the correct V3 pool ABI based on the DEX name."""
     if 'pancake' in dex_name.lower():
@@ -222,7 +184,7 @@ def _prepare_uniswap_v3_swap(
         logging.info(f"  - Using provided pool address: {pair_address}")
         pool_contract = w3.eth.contract(address=pair_address, abi=_get_v3_pool_abi(dex_name))
         try:
-            pool_fee = resilient_rpc_call(lambda: pool_contract.functions.fee().call())
+            pool_fee = pool_contract.functions.fee().call()
             if fee_bps_hint and fee_bps_hint != pool_fee:
                 logging.warning(f"  - Fee mismatch! DexScreener: {fee_bps_hint}, On-chain: {pool_fee}. Trusting on-chain fee.")
             chosen_fee = pool_fee
@@ -239,14 +201,12 @@ def _prepare_uniswap_v3_swap(
             logging.info(f"  - Prioritizing fee tier {fee_bps_hint} from DexScreener hint.")
         zero = "0x" + "00" * 20
         for fee in FEE_TIERS:
-            addr = resilient_rpc_call(
-                lambda: factory.functions.getPool(token_in, token_out, fee).call()
-            )
+            addr = factory.functions.getPool(token_in, token_out, fee).call()
             if addr and addr != zero and w3.eth.get_code(addr):
                 # Found a potential pool, now check its liquidity before selecting it.
                 temp_pool = w3.eth.contract(address=addr, abi=_get_v3_pool_abi(dex_name))
                 try:
-                    liquidity = resilient_rpc_call(lambda: temp_pool.functions.liquidity().call())
+                    liquidity = temp_pool.functions.liquidity().call()
                     if liquidity > 0:
                         chosen_fee, pool_address = fee, addr
                         logging.info(f"  - Pool {addr} at {fee} bps with liquidity {liquidity} selected")
@@ -263,11 +223,11 @@ def _prepare_uniswap_v3_swap(
     # ② sanity-check pool status (slot0 & liquidity)
     # ------------------------------------------------------------------ #
     pool = w3.eth.contract(pool_address, abi=_get_v3_pool_abi(dex_name))
-    sqrt_price_x96, *_ = resilient_rpc_call(lambda: pool.functions.slot0().call())
+    sqrt_price_x96, *_ = pool.functions.slot0().call()
     if sqrt_price_x96 == 0:
         raise ValueError("Pool exists but never initialised (sqrtPriceX96 == 0)")
 
-    liquidity = resilient_rpc_call(lambda: pool.functions.liquidity().call())
+    liquidity = pool.functions.liquidity().call()
     if liquidity == 0:
         raise ValueError("Pool initialised but has zero active liquidity")
 
@@ -392,9 +352,9 @@ def execute_trade(buy_pool, sell_pool, spread, token_address, token_info):
         # --- Pre-flight checks ---
         logging.info("  - Performing pre-flight checks...")
         base_token_contract = w3.eth.contract(address=BASE_CURRENCY_ADDRESS, abi=ERC20_ABI)
-        base_decimals = resilient_rpc_call(lambda: base_token_contract.functions.decimals().call())
+        base_decimals = base_token_contract.functions.decimals().call()
         amount_in_wei = int(TRADE_AMOUNT_BASE_TOKEN * (10**base_decimals))
-        wallet_balance_wei = resilient_rpc_call(lambda: base_token_contract.functions.balanceOf(account.address).call())
+        wallet_balance_wei = base_token_contract.functions.balanceOf(account.address).call()
 
         if wallet_balance_wei < amount_in_wei:
             logging.warning(f"!!! TRADE SKIPPED: Insufficient balance. Have {wallet_balance_wei / (10**base_decimals):.6f}, need {TRADE_AMOUNT_BASE_TOKEN}.")
@@ -417,18 +377,18 @@ def execute_trade(buy_pool, sell_pool, spread, token_address, token_info):
         # --- 1. BUY TRANSACTION ---
         logging.info(f"Step 1: Buying {token_name} ({token_address}) on {buy_dex_name} (v{buy_router_info['version']})...")
         target_token_contract = w3.eth.contract(address=token_address, abi=ERC20_ABI)
-        target_decimals = resilient_rpc_call(lambda: target_token_contract.functions.decimals().call())
+        target_decimals = target_token_contract.functions.decimals().call()
 
         # --- Transaction Preparation ---
-        chain_id = resilient_rpc_call(lambda: w3.eth.chain_id)
+        chain_id = w3.eth.chain_id
         router_type = buy_router_info.get('type', 'uniswapv2')
         buy_txn = None
 
-        max_priority_fee = resilient_rpc_call(lambda: w3.eth.max_priority_fee)
-        latest_block = resilient_rpc_call(lambda: w3.eth.get_block('latest'))
+        max_priority_fee = w3.eth.max_priority_fee
+        latest_block = w3.eth.get_block('latest')
         base_fee = latest_block['baseFeePerGas']
         max_fee_per_gas = base_fee * 2 + max_priority_fee
-        nonce = resilient_rpc_call(lambda: w3.eth.get_transaction_count(account.address))
+        nonce = w3.eth.get_transaction_count(account.address)
 
         swap_function = None
         if router_type == '1inch':
@@ -480,7 +440,7 @@ def execute_trade(buy_pool, sell_pool, spread, token_address, token_info):
         # --- Sell Transaction Preparation ---
         router_type_sell = sell_router_info.get('type', 'uniswapv2')
         sell_txn = None
-        sell_nonce = resilient_rpc_call(lambda: w3.eth.get_transaction_count(account.address))
+        sell_nonce = w3.eth.get_transaction_count(account.address)
 
         sell_swap_function = None
         if router_type_sell == '1inch':
