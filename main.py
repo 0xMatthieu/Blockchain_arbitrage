@@ -13,197 +13,185 @@ from dex_utils import check_and_approve_token, get_token_info
 from trading import execute_trade
 from logging_config import setup_logging
 
-# --- Global State ---
-last_trade_attempt_ts = 0
-TOKEN_INFO = {}
-latest_spread_info = {}
 
-def _router_fee_bps(pool):
-    """Return total fee bps for price quoted by DexScreener item."""
-    if pool['dex'] in ('uniswap', 'pancakeswap'):
-        return V3_FEE_MAP.get(pool['feeBps'], 30)   # default 0.30 %
-    else:                                           # solidly-style v2
-        return V2_FEE_BPS
+class ArbitrageBot:
+    def __init__(self, shared_spread_info_dict):
+        self.last_trade_attempt_ts = 0
+        self.TOKEN_INFO = {}
+        self.latest_spread_info = shared_spread_info_dict
+        self.running = True
 
-def analyze_and_trade(pairs, token_address):
-    global last_trade_attempt_ts, latest_spread_info
+    def stop(self):
+        self.running = False
 
-    if time.time() - last_trade_attempt_ts < TRADE_COOLDOWN_SECONDS:
-        return
+    def _router_fee_bps(self, pool):
+        """Return total fee bps for price quoted by DexScreener item."""
+        if pool['dex'] in ('uniswap', 'pancakeswap'):
+            return V3_FEE_MAP.get(pool['feeBps'], 30)
+        else:
+            return V2_FEE_BPS
 
-    # The pairs list is now pre-filtered for liquidity and volume in main()
-    if len(pairs) < 2:
-        # This message will be displayed if there are fewer than 2 valid pools
-        # after filtering in main(). `pairs` will have 0 or 1 item.
-        token_symbol = TOKEN_INFO.get(token_address, {}).get('symbol', f"[{token_address[-6:]}]")
-        pair_symbol = pairs[0]['pair'] if pairs else token_symbol
-        #logging.info(f"{pair_symbol:<20} | Not enough valid pools to analyze. Waiting...")
-        latest_spread_info[token_address] = f"{pair_symbol:<20} | Not enough valid pools to analyze."
-        return
+    def analyze_and_trade(self, pairs, token_address):
+        if time.time() - self.last_trade_attempt_ts < TRADE_COOLDOWN_SECONDS:
+            return
 
-    # sort by quoted token price
-    pairs.sort(key=lambda x: x['price'])
-    buy_pool  = pairs[0]
-    sell_pool = pairs[-1]
+        if len(pairs) < 2:
+            token_symbol = self.TOKEN_INFO.get(token_address, {}).get('symbol', f"[{token_address[-6:]}]")
+            pair_symbol = pairs[0]['pair'] if pairs else token_symbol
+            self.latest_spread_info[token_address] = f"{pair_symbol:<20} | Not enough valid pools to analyze."
+            return
 
-    # ---- fee-adjusted spread ------------------------------------
-    buy_fee  = _router_fee_bps(buy_pool)   / 10_000
-    sell_fee = _router_fee_bps(sell_pool)  / 10_000
+        pairs.sort(key=lambda x: x['price'])
+        buy_pool, sell_pool = pairs[0], pairs[-1]
 
-    effective_buy  = buy_pool['price']  * (1 + buy_fee)   # we pay
-    effective_sell = sell_pool['price'] * (1 - sell_fee)  # we receive
-    spread = (effective_sell - effective_buy) / effective_buy * 100
-    # -------------------------------------------------------------
+        buy_fee = self._router_fee_bps(buy_pool) / 10_000
+        sell_fee = self._router_fee_bps(sell_pool) / 10_000
+        effective_buy = buy_pool['price'] * (1 + buy_fee)
+        effective_sell = sell_pool['price'] * (1 - sell_fee)
+        spread = (effective_sell - effective_buy) / effective_buy * 100
 
-    # ---- pretty banner (route line) -----------------------------
-    banner = (
-        f"{buy_pool['pair']:<20} | "
-        f"Route: {buy_pool['dex'].upper()} (buy, fee {buy_fee*100:.2f}%) "
-        "-> "
-        f"{sell_pool['dex'].upper()} (sell, fee {sell_fee*100:.2f}%) | "
-        f"Spread: {spread:6.2f}%"
-    )
-    #logging.info(banner)
-    latest_spread_info[token_address] = banner
-    # -------------------------------------------------------------
+        banner = (
+            f"{buy_pool['pair']:<20} | "
+            f"Route: {buy_pool['dex'].upper()} (buy, fee {buy_fee*100:.2f}%) -> "
+            f"{sell_pool['dex'].upper()} (sell, fee {sell_fee*100:.2f}%) | "
+            f"Spread: {spread:6.2f}%"
+        )
+        self.latest_spread_info[token_address] = banner
 
-    if spread >= MIN_SPREAD_PERCENT:
-        token_info = TOKEN_INFO.get(token_address, {})
-        execute_trade(buy_pool, sell_pool, spread, token_address, token_info)
-        last_trade_attempt_ts = time.time()
+        if spread >= MIN_SPREAD_PERCENT:
+            token_info = self.TOKEN_INFO.get(token_address, {})
+            execute_trade(buy_pool, sell_pool, spread, token_address, token_info)
+            self.last_trade_attempt_ts = time.time()
 
-def main():
-    setup_logging()
-    global TOKEN_INFO
-    # This flag should be True to ensure all routers are approved to spend tokens.
-    check_dex = True
+    def run(self):
+        check_dex = True
+        if not all([TOKEN_ADDRESSES, BASE_CURRENCY_ADDRESS, account]):
+            logging.error("Error: Core configuration (TOKEN_ADDRESSES, BASE_CURRENCY_ADDRESS, PRIVATE_KEY) is missing.")
+            return
 
-    if not all([TOKEN_ADDRESSES, BASE_CURRENCY_ADDRESS, account]):
-        logging.error("Error: Core configuration (TOKEN_ADDRESSES, BASE_CURRENCY_ADDRESS, PRIVATE_KEY) is missing.")
-        return
+        if account:
+            logging.info(f"Bot wallet address: {account.address}")
 
-    if account:
-        logging.info(f"Bot wallet address: {account.address}")
+        logging.info("\n--- Fetching Watched Token Information ---")
+        for addr in TOKEN_ADDRESSES:
+            info = get_token_info(addr)
+            self.TOKEN_INFO[addr] = info
+            logging.info(f"  - Watching: {info['name']} ({info['symbol']})")
+        logging.info("----------------------------------------\n")
 
-    logging.info("\n--- Fetching Watched Token Information ---")
-    for addr in TOKEN_ADDRESSES:
-        info = get_token_info(addr)
-        TOKEN_INFO[addr] = info
-        logging.info(f"  - Watching: {info['name']} ({info['symbol']})")
-    logging.info("----------------------------------------\n")
+        if check_dex:
+            logging.info("--- Running Initial Approval Checks ---")
+            base_token_contract = w3.eth.contract(address=BASE_CURRENCY_ADDRESS, abi=ERC20_ABI)
+            base_decimals = base_token_contract.functions.decimals().call()
+            amount_to_approve_wei = int(TRADE_AMOUNT_BASE_TOKEN * (10**base_decimals))
+            unlimited_allowance = 2**256 - 1
 
-    if check_dex:
-        logging.info("--- Running Initial Approval Checks ---")
-        base_token_contract = w3.eth.contract(address=BASE_CURRENCY_ADDRESS, abi=ERC20_ABI)
-        base_decimals = base_token_contract.functions.decimals().call()
-        amount_to_approve_wei = int(TRADE_AMOUNT_BASE_TOKEN * (10**base_decimals))
-        unlimited_allowance = 2**256 - 1
+            for dex, info in DEX_ROUTERS.items():
+                logging.info(f"\nChecking approvals for {dex.upper()} router ({info['address']})...")
+                check_and_approve_token(BASE_CURRENCY_ADDRESS, info['address'], amount_to_approve_wei)
+                for token_address in TOKEN_ADDRESSES:
+                    token_name = self.TOKEN_INFO.get(token_address, {}).get('name', token_address)
+                    logging.info(f"  - Approving target token: {token_name} ({token_address})")
+                    check_and_approve_token(token_address, info['address'], unlimited_allowance)
+                time.sleep(1)
+            logging.info("--- Initial Approval Checks Complete ---\n")
 
-        for dex, info in DEX_ROUTERS.items():
-            logging.info(f"\nChecking approvals for {dex.upper()} router ({info['address']})...")
-            check_and_approve_token(BASE_CURRENCY_ADDRESS, info['address'], amount_to_approve_wei)
-            for token_address in TOKEN_ADDRESSES:
-                token_name = TOKEN_INFO.get(token_address, {}).get('name', token_address)
-                logging.info(f"  - Approving target token: {token_name} ({token_address})")
-                check_and_approve_token(token_address, info['address'], unlimited_allowance)
-            time.sleep(1)
-        logging.info("--- Initial Approval Checks Complete ---\n")
-
-    logging.info("--- Initial Pool Liquidity & Volume Check ---")
-    for token_address in TOKEN_ADDRESSES:
-        try:
-            api_url = f"https://api.dexscreener.com/latest/dex/tokens/{token_address}"
-            response = requests.get(api_url)
-            response.raise_for_status()
-            j = response.json()
-
-            if not j or not j.get('pairs'):
-                token_name = TOKEN_INFO.get(token_address, {}).get('name', token_address)
-                logging.info(f"\nToken: {token_name} ({token_address}) - No pairs found.")
-                continue
-
-            token_name = TOKEN_INFO.get(token_address, {}).get('name', token_address)
-            logging.info(f"\n--- Token: {token_name} ({token_address}) ---")
-            for p in j['pairs']:
-                liquidity_usd = p.get('liquidity', {}).get('usd', 0)
-                volume_h24 = p.get('volume', {}).get('h24', 0)
-                logging.info(f"  - DEX: {p['dexId']:<15} | Pool: {p['pairAddress']} | Liq: ${liquidity_usd:12,.2f} | Vol: ${volume_h24:12,.2f}")
-        except Exception as e:
-            logging.error(f"\nCould not fetch initial pool data for {token_address}: {e}")
-    logging.info("-" * 50)
-
-    logging.info(f"Starting arbitrage analysis for tokens: {TOKEN_ADDRESSES}")
-    logging.info(f"Polling API every {POLL_INTERVAL:.2f} seconds for each token.")
-    logging.info("-" * 50)
-
-    last_summary_print_time = time.time()
-    while True:
-        if time.time() - last_summary_print_time >= 60:
-            logging.info("--- Best Current Spread Summary (1 min) ---")
-            if latest_spread_info:
-                for token_addr in TOKEN_ADDRESSES:
-                    info_line = latest_spread_info.get(token_addr, "Waiting for data...")
-                    logging.info(info_line)
-            else:
-                logging.info("No spread data yet. Waiting for polls...")
-            logging.info("-" * 50)
-            last_summary_print_time = time.time()
-
+        logging.info("--- Initial Pool Liquidity & Volume Check ---")
         for token_address in TOKEN_ADDRESSES:
-            token_symbol = TOKEN_INFO.get(token_address, {}).get('symbol', f"[{token_address[-6:]}]")
             try:
                 api_url = f"https://api.dexscreener.com/latest/dex/tokens/{token_address}"
                 response = requests.get(api_url)
                 response.raise_for_status()
                 j = response.json()
-                
+
                 if not j or not j.get('pairs'):
-                    logging.info(f"[{token_symbol}] No pairs found in API response.")
-                    current_pairs = []
-                else:
-                    current_pairs = []
-                    for p in j['pairs']:
-                        # --- Pre-filter pools based on liquidity and volume ---
-                        liquidity_usd = p.get('liquidity', {}).get('usd', 0)
-                        volume_h24 = p.get('volume', {}).get('h24', 0)
+                    token_name = self.TOKEN_INFO.get(token_address, {}).get('name', token_address)
+                    logging.info(f"\nToken: {token_name} ({token_address}) - No pairs found.")
+                    continue
 
-                        if (p.get('priceNative') and p.get('quoteToken') and p.get('quoteToken').get('address') and
-                            w3.to_checksum_address(p['quoteToken']['address']) == BASE_CURRENCY_ADDRESS and
-                            liquidity_usd >= MIN_LIQUIDITY_USD and
-                            volume_h24 >= MIN_VOLUME_USD):
-                            
-                            price_native = float(p['priceNative'])
-                            price_usd = float(p['priceUsd'])
-                            base_currency_price_usd = 0
-                            if price_native > 1e-18:
-                                base_currency_price_usd = price_usd / price_native
-
-                            current_pairs.append({
-                                'dex': p['dexId'], 'chain' : p['chainId'],
-                                'pair': f"{p['baseToken']['symbol']}/{p['quoteToken']['symbol']}",
-                                'price': price_native, 'liq_usd': liquidity_usd,
-                                'pairAddress': p['pairAddress'], 'feeBps': p.get('feeBps', 0),
-                                'base_currency_price_usd': base_currency_price_usd
-                            })
-                
-                if current_pairs:
-                    analyze_and_trade(current_pairs, token_address)
-                elif j and j.get('pairs'):
-                    # case where pairs exist but none are valid (e.g. not against base currency or no liquidity)
-                    pair_symbol = f"{j['pairs'][0]['baseToken']['symbol']}/{j['pairs'][0]['quoteToken']['symbol']}"
-                    logging.info(f"{pair_symbol:<20} | No valid/liquid pools found.")
-
-            except requests.exceptions.RequestException as e:
-                logging.warning(f"[{token_symbol}] API Error: {str(e)[:80]}")
-                time.sleep(POLL_INTERVAL_ERROR)
+                token_name = self.TOKEN_INFO.get(token_address, {}).get('name', token_address)
+                logging.info(f"\n--- Token: {token_name} ({token_address}) ---")
+                for p in j['pairs']:
+                    liquidity_usd = p.get('liquidity', {}).get('usd', 0)
+                    volume_h24 = p.get('volume', {}).get('h24', 0)
+                    logging.info(f"  - DEX: {p['dexId']:<15} | Pool: {p['pairAddress']} | Liq: ${liquidity_usd:12,.2f} | Vol: ${volume_h24:12,.2f}")
             except Exception as e:
-                logging.error(f"[{token_symbol}] App Error: {str(e)[:80]}")
-                time.sleep(POLL_INTERVAL_ERROR)
-            
-            time.sleep(POLL_INTERVAL)
+                logging.error(f"\nCould not fetch initial pool data for {token_address}: {e}")
+        logging.info("-" * 50)
+
+        logging.info(f"Starting arbitrage analysis for tokens: {TOKEN_ADDRESSES}")
+        logging.info(f"Polling API every {POLL_INTERVAL:.2f} seconds for each token.")
+        logging.info("-" * 50)
+
+        last_summary_print_time = time.time()
+        while self.running:
+            if time.time() - last_summary_print_time >= 60:
+                logging.info("--- Best Current Spread Summary (1 min) ---")
+                if self.latest_spread_info:
+                    for token_addr in TOKEN_ADDRESSES:
+                        info_line = self.latest_spread_info.get(token_addr, "Waiting for data...")
+                        logging.info(info_line)
+                else:
+                    logging.info("No spread data yet. Waiting for polls...")
+                logging.info("-" * 50)
+                last_summary_print_time = time.time()
+
+            for token_address in TOKEN_ADDRESSES:
+                token_symbol = self.TOKEN_INFO.get(token_address, {}).get('symbol', f"[{token_address[-6:]}]")
+                try:
+                    api_url = f"https://api.dexscreener.com/latest/dex/tokens/{token_address}"
+                    response = requests.get(api_url)
+                    response.raise_for_status()
+                    j = response.json()
+                    
+                    if not j or not j.get('pairs'):
+                        logging.info(f"[{token_symbol}] No pairs found in API response.")
+                        current_pairs = []
+                    else:
+                        current_pairs = []
+                        for p in j['pairs']:
+                            liquidity_usd = p.get('liquidity', {}).get('usd', 0)
+                            volume_h24 = p.get('volume', {}).get('h24', 0)
+
+                            if (p.get('priceNative') and p.get('quoteToken') and p.get('quoteToken').get('address') and
+                                w3.to_checksum_address(p['quoteToken']['address']) == BASE_CURRENCY_ADDRESS and
+                                liquidity_usd >= MIN_LIQUIDITY_USD and
+                                volume_h24 >= MIN_VOLUME_USD):
+                                
+                                price_native = float(p['priceNative'])
+                                price_usd = float(p['priceUsd'])
+                                base_currency_price_usd = 0
+                                if price_native > 1e-18:
+                                    base_currency_price_usd = price_usd / price_native
+
+                                current_pairs.append({
+                                    'dex': p['dexId'], 'chain' : p['chainId'],
+                                    'pair': f"{p['baseToken']['symbol']}/{p['quoteToken']['symbol']}",
+                                    'price': price_native, 'liq_usd': liquidity_usd,
+                                    'pairAddress': p['pairAddress'], 'feeBps': p.get('feeBps', 0),
+                                    'base_currency_price_usd': base_currency_price_usd
+                                })
+                    
+                    if current_pairs:
+                        self.analyze_and_trade(current_pairs, token_address)
+                    elif j and j.get('pairs'):
+                        pair_symbol = f"{j['pairs'][0]['baseToken']['symbol']}/{j['pairs'][0]['quoteToken']['symbol']}"
+                        logging.info(f"{pair_symbol:<20} | No valid/liquid pools found.")
+
+                except requests.exceptions.RequestException as e:
+                    logging.warning(f"[{token_symbol}] API Error: {str(e)[:80]}")
+                    time.sleep(POLL_INTERVAL_ERROR)
+                except Exception as e:
+                    logging.error(f"[{token_symbol}] App Error: {str(e)[:80]}")
+                    time.sleep(POLL_INTERVAL_ERROR)
+                
+                time.sleep(POLL_INTERVAL)
+
 
 if __name__ == "__main__":
+    setup_logging()
+    bot = ArbitrageBot(shared_spread_info_dict={})
     try:
-        main()
+        bot.run()
     except KeyboardInterrupt:
         logging.info("\nProgram stopped by user.")
