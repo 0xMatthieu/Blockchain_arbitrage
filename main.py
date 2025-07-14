@@ -28,29 +28,6 @@ class ArbitrageBot:
     def stop(self):
         self.running = False
 
-    def _resilient_rpc_call(self, callable_func):
-        _QUOTER_V2_RET_TYPES = ["uint256", "uint160", "uint32", "uint256"]
-        last_exception = None
-        for i in range(RPC_MAX_RETRIES):
-            try:
-                return callable_func()
-            except ContractLogicError as err:
-                last_exception = err
-                payload = err.args[0].get("data") if err.args and isinstance(err.args[0], dict) else None
-                if payload and len(payload) > 4:
-                    data_bytes = HexBytes(payload)[4:] if len(payload) % 32 else HexBytes(payload)
-                    decoded = decode(_QUOTER_V2_RET_TYPES, data_bytes.ljust(32 * 4, b"\0"))
-                    return decoded[0]
-            except Exception as err:
-                last_exception = err
-            if i < RPC_MAX_RETRIES - 1:
-                wait = RPC_BACKOFF_FACTOR * (2 ** i)
-                logging.warning(f"\n  - [RPC] Call failed: {last_exception}. Retrying in {wait:.2f}s ({i + 1}/{RPC_MAX_RETRIES})")
-                time.sleep(wait)
-            else:
-                logging.error(f"  - [RPC] Call failed after {RPC_MAX_RETRIES} retries.")
-        raise Exception(f"RPC call failed after {RPC_MAX_RETRIES} retries.") from last_exception
-
     def _get_v3_pool_abi(self, dex_name):
         if 'pancake' in dex_name.lower():
             return PANCAKE_V3_POOL_ABI
@@ -74,7 +51,7 @@ class ArbitrageBot:
 
             if version == 3:
                 pool_contract = w3.eth.contract(address=pair_address, abi=self._get_v3_pool_abi(pool_details['dexId']))
-                sqrt_price_x96, *_ = self._resilient_rpc_call(lambda: pool_contract.functions.slot0().call())
+                sqrt_price_x96, *_ = pool_contract.functions.slot0().call()
                 if sqrt_price_x96 == 0: return None
                 
                 (token0, _) = (base_t, quote_t) if int(base_t, 16) < int(quote_t, 16) else (quote_t, base_t)
@@ -84,7 +61,7 @@ class ArbitrageBot:
 
             elif version == 2:
                 pool_contract = w3.eth.contract(address=pair_address, abi=SOLIDLY_PAIR_ABI)
-                reserves = self._resilient_rpc_call(lambda: pool_contract.functions.getReserves().call())
+                reserves = pool_contract.functions.getReserves().call()
                 reserve0, reserve1 = reserves[0], reserves[1]
                 if reserve0 == 0 or reserve1 == 0: return None
 
