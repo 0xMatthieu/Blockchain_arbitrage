@@ -11,7 +11,7 @@ from abi import (
     ERC20_ABI, UNISWAP_V2_ROUTER_ABI, UNISWAP_V3_ROUTER_ABI, SOLIDLY_ROUTER_ABI,
     SOLIDLY_FACTORY_ABI, UNISWAP_V3_POOL_ABI, UNISWAP_V3_FACTORY_ABI, SOLIDLY_PAIR_ABI,
     UNISWAP_V3_QUOTER_ABI, PANCAKE_V3_POOL_ABI, ONEINCH_V6_ROUTER_ABI,
-    ALIEN_BASE_ROUTER_ABI, ALIEN_BASE_V3_POOL_ABI, ALIEN_BASE_V3_FACTORY_ABI
+    ALIENBASE_V2_ROUTER_ABI
 )
 from dex_utils import find_router_info
 
@@ -161,99 +161,23 @@ def _prepare_alien_base_swap(
         fee_bps_hint: int = None
     ):
     """
-    Prepares an Alien Base (Uniswap-V3 fork) style swap.
-    It does not use a quoter and sets amountOutMinimum to 0.
+    Prepares an Alien Base (Uniswap-V2 style) swap.
+    It does not use a quoter and sets amountOutMinimum to 0 for speed.
     """
+    if pair_address:
+        logging.info(f"  - Alien Base V2 Using provided pool address: {pair_address}")
 
-    factory_address = router_info.get("factory")
-    if not factory_address:
-        raise ValueError(f"V3 DEX '{dex_name}' requires a 'factory' address")
-
-    logging.info(f"  - Alien Base V3 DEX detected. Querying factory {factory_address} …")
-    factory = w3.eth.contract(factory_address, abi=ALIEN_BASE_V3_FACTORY_ABI)
-
-    # ------------------------------------------------------------------ #
-    # ① find a pool that actually exists (code size > 0)
-    # ------------------------------------------------------------------ #
-    chosen_fee, pool_address = None, None
+    path = [token_in, token_out]
+    router_contract = w3.eth.contract(address=router_info['address'], abi=ALIENBASE_V2_ROUTER_ABI)
     
-    if pair_address and w3.eth.get_code(pair_address):
-        logging.info(f"  - Using provided pool address: {pair_address}")
-        pool_contract = w3.eth.contract(address=pair_address, abi=ALIEN_BASE_V3_POOL_ABI)
-        try:
-            pool_fee = resilient_rpc_call(lambda: pool_contract.functions.fee().call())
-            if fee_bps_hint and fee_bps_hint != pool_fee:
-                logging.warning(f"  - Fee mismatch! DexScreener: {fee_bps_hint}, On-chain: {pool_fee}. Trusting on-chain fee.")
-            chosen_fee = pool_fee
-            pool_address = pair_address
-            logging.info(f"  - Successfully confirmed pool at fee tier {chosen_fee} bps.")
-        except Exception as e:
-            logging.warning(f"  - Could not confirm fee for provided pool {pair_address}. Falling back to factory search. Error: {e}")
-
-    if not pool_address:
-        logging.info(f"  - No valid pool provided. Querying factory {factory_address} for a liquid pool...")
-        FEE_TIERS = [500, 3000, 10000, 2500, 100]
-        if fee_bps_hint and fee_bps_hint in FEE_TIERS:
-            FEE_TIERS.insert(0, FEE_TIERS.pop(FEE_TIERS.index(fee_bps_hint)))
-            logging.info(f"  - Prioritizing fee tier {fee_bps_hint} from DexScreener hint.")
-        zero = "0x" + "00" * 20
-        for fee in FEE_TIERS:
-            addr = resilient_rpc_call(
-                lambda: factory.functions.getPool(token_in, token_out, fee).call()
-            )
-            if addr and addr != zero and w3.eth.get_code(addr):
-                # Found a potential pool, now check its liquidity before selecting it.
-                temp_pool = w3.eth.contract(address=addr, abi=ALIEN_BASE_V3_POOL_ABI)
-                try:
-                    liquidity = resilient_rpc_call(lambda: temp_pool.functions.liquidity().call())
-                    if liquidity > 0:
-                        chosen_fee, pool_address = fee, addr
-                        logging.info(f"  - Pool {addr} at {fee} bps with liquidity {liquidity} selected")
-                        break  # Found a valid, liquid pool. Exit the loop.
-                    else:
-                        logging.info(f"  - Pool {addr} at {fee} bps found but has zero liquidity. Skipping.")
-                except Exception as e:
-                    logging.warning(f"  - Could not check liquidity for pool {addr}: {e}. Skipping.")
-
-    if not pool_address:
-        raise ValueError(f"No live, liquid V3 pool for pair on {dex_name}")
-
-    # ------------------------------------------------------------------ #
-    # ② sanity-check pool status (slot0 & liquidity)
-    # ------------------------------------------------------------------ #
-    pool = w3.eth.contract(pool_address, abi=ALIEN_BASE_V3_POOL_ABI)
-    sqrt_price_x96, *_ = resilient_rpc_call(lambda: pool.functions.slot0().call())
-    if sqrt_price_x96 == 0:
-        raise ValueError("Pool exists but never initialised (sqrtPriceX96 == 0)")
-
-    liquidity = resilient_rpc_call(lambda: pool.functions.liquidity().call())
-    if liquidity == 0:
-        raise ValueError("Pool initialised but has zero active liquidity")
-
-    logging.info(f"  - Pool initialised with {liquidity} liquidity")
-
-    amount_out_min = 0
-
-    router = w3.eth.contract(router_info["address"], abi=ALIEN_BASE_ROUTER_ABI)
-
-    def _build_v3_swap_fn(min_out):
-        swap_params = {
-            "tokenIn": token_in,
-            "tokenOut": token_out,
-            "fee": chosen_fee,
-            "recipient": account.address,
-            "deadline": int(time.time()) + 300,
-            "amountIn": amount_in_wei,
-            "amountOutMinimum": min_out,
-            "sqrtPriceLimitX96": 0,
-        }
-        return router.functions.exactInputSingle(swap_params)
-
-    logging.info(f"  - Prepare swap")
-    swap_fn = _build_v3_swap_fn(amount_out_min)
-
-    # Gas estimation checks removed by user request.
-    return swap_fn, amount_out_min
+    logging.info(f"  - Alien Base V2 Path: {path} (fast mode)")
+    amount_out_min_wei = 0
+    logging.info(f"  - Alien Base V2 Min Amount Out (wei): {amount_out_min_wei} (fast mode)")
+    
+    swap_function = router_contract.functions.swapExactTokensForTokens(
+        amount_in_wei, amount_out_min_wei, path, account.address, int(time.time()) + 300
+    )
+    return swap_function, amount_out_min_wei
 
 def _prepare_uniswap_v2_swap(router_info, amount_in_wei, path, pair_address: str = None):
     """Prepares a swap transaction for a Uniswap V2-style DEX, skipping quotes for speed."""
