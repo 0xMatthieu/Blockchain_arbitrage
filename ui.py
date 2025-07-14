@@ -58,15 +58,11 @@ if not st.session_state.bot_started:
     st.stop()
 
 # --- Main Dashboard Area ---
-col1, col2 = st.columns([2, 1.5])
+st.header("📈 Best Spread Opportunities")
+spread_placeholder = st.empty()
 
-with col1:
-    st.header("📈 Best Spread Opportunities")
-    spread_placeholder = st.empty()
-
-with col2:
-    st.header("📋 Live Log / Console")
-    log_placeholder = st.empty()
+st.header("📋 Live Log / Console")
+log_placeholder = st.empty()
 
 # --- Display Loop ---
 while True:
@@ -83,7 +79,8 @@ while True:
     # --- Update log display ---
     with log_placeholder.container():
         log_contents = st.session_state.log_stream.getvalue()
-        st.text_area("Logs", value=log_contents, height=400, disabled=True)
+        reversed_log_contents = '\n'.join(log_contents.splitlines()[::-1])
+        st.text_area("Logs", value=reversed_log_contents, height=400, disabled=True)
 
     time.sleep(10)
     st.rerun()
