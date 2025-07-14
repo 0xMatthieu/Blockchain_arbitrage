@@ -113,26 +113,37 @@ class ArbitrageBot:
             logging.info("--- Initial Approval Checks Complete ---\n")
 
         logging.info("--- Initial Pool Liquidity & Volume Check ---")
-        for token_address in TOKEN_ADDRESSES:
-            try:
-                api_url = f"https://api.dexscreener.com/latest/dex/tokens/{token_address}"
-                response = requests.get(api_url)
-                response.raise_for_status()
-                j = response.json()
+        try:
+            token_list_str = ",".join(TOKEN_ADDRESSES)
+            api_url = f"https://api.dexscreener.com/latest/dex/tokens/{token_list_str}"
+            response = requests.get(api_url)
+            response.raise_for_status()
+            j = response.json()
 
-                if not j or not j.get('pairs'):
-                    token_name = self.TOKEN_INFO.get(token_address, {}).get('name', token_address)
-                    logging.info(f"\nToken: {token_name} ({token_address}) - No pairs found.")
-                    continue
-
+            pairs_by_token = {addr: [] for addr in TOKEN_ADDRESSES}
+            if j and j.get('pairs'):
+                for p in j['pairs']:
+                    base_token_addr = w3.to_checksum_address(p['baseToken']['address'])
+                    if base_token_addr in pairs_by_token:
+                        pairs_by_token[base_token_addr].append(p)
+            
+            for token_address in TOKEN_ADDRESSES:
                 token_name = self.TOKEN_INFO.get(token_address, {}).get('name', token_address)
                 logging.info(f"\n--- Token: {token_name} ({token_address}) ---")
-                for p in j['pairs']:
+                
+                pairs = pairs_by_token.get(token_address)
+                if not pairs:
+                    logging.info("  - No pairs found.")
+                    continue
+
+                for p in pairs:
                     liquidity_usd = p.get('liquidity', {}).get('usd', 0)
                     volume_h24 = p.get('volume', {}).get('h24', 0)
-                    logging.info(f"  - DEX: {p['dexId']:<15} | Pool: {p['pairAddress']} | Liq: ${liquidity_usd:12,.2f} | Vol: ${volume_h24:12,.2f}")
-            except Exception as e:
-                logging.error(f"\nCould not fetch initial pool data for {token_address}: {e}")
+                    dex_name = self._get_dex_name_from_id(p['dexId'])
+                    logging.info(f"  - DEX: {dex_name:<15} | Pool: {p['pairAddress']} | Liq: ${liquidity_usd:12,.2f} | Vol: ${volume_h24:12,.2f}")
+
+        except Exception as e:
+            logging.error(f"\nCould not fetch initial pool data: {e}")
         logging.info("-" * 50)
 
         logging.info(f"Starting arbitrage analysis for tokens: {TOKEN_ADDRESSES}")
