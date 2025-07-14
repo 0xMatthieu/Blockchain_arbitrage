@@ -16,6 +16,7 @@ from logging_config import setup_logging
 # --- Global State ---
 last_trade_attempt_ts = 0
 TOKEN_INFO = {}
+latest_spread_info = {}
 
 def _router_fee_bps(pool):
     """Return total fee bps for price quoted by DexScreener item."""
@@ -25,7 +26,7 @@ def _router_fee_bps(pool):
         return V2_FEE_BPS
 
 def analyze_and_trade(pairs, token_address):
-    global last_trade_attempt_ts
+    global last_trade_attempt_ts, latest_spread_info
 
     if time.time() - last_trade_attempt_ts < TRADE_COOLDOWN_SECONDS:
         return
@@ -37,6 +38,7 @@ def analyze_and_trade(pairs, token_address):
         token_symbol = TOKEN_INFO.get(token_address, {}).get('symbol', f"[{token_address[-6:]}]")
         pair_symbol = pairs[0]['pair'] if pairs else token_symbol
         #logging.info(f"{pair_symbol:<20} | Not enough valid pools to analyze. Waiting...")
+        latest_spread_info[token_address] = f"{pair_symbol:<20} | Not enough valid pools to analyze."
         return
 
     # sort by quoted token price
@@ -62,6 +64,7 @@ def analyze_and_trade(pairs, token_address):
         f"Spread: {spread:6.2f}%"
     )
     #logging.info(banner)
+    latest_spread_info[token_address] = banner
     # -------------------------------------------------------------
 
     if spread >= MIN_SPREAD_PERCENT:
@@ -133,7 +136,19 @@ def main():
     logging.info(f"Polling API every {POLL_INTERVAL:.2f} seconds for each token.")
     logging.info("-" * 50)
 
+    last_summary_print_time = time.time()
     while True:
+        if time.time() - last_summary_print_time >= 60:
+            logging.info("--- Best Current Spread Summary (1 min) ---")
+            if latest_spread_info:
+                for token_addr in TOKEN_ADDRESSES:
+                    info_line = latest_spread_info.get(token_addr, "Waiting for data...")
+                    logging.info(info_line)
+            else:
+                logging.info("No spread data yet. Waiting for polls...")
+            logging.info("-" * 50)
+            last_summary_print_time = time.time()
+
         for token_address in TOKEN_ADDRESSES:
             token_symbol = TOKEN_INFO.get(token_address, {}).get('symbol', f"[{token_address[-6:]}]")
             try:
