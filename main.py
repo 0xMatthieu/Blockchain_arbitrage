@@ -149,53 +149,66 @@ class ArbitrageBot:
         
         logging.info("--- Discovering pools and fetching initial data via DexScreener ---")
         try:
-            token_list_str = ",".join(TOKEN_ADDRESSES)
-            api_url = f"https://api.dexscreener.com/latest/dex/tokens/{token_list_str}"
-            response = requests.get(api_url)
-            response.raise_for_status()
-            j = response.json()
-            
-            all_discovered_pairs = j.get('pairs', [])
-            for p in all_discovered_pairs:
-                base_token_addr = w3.to_checksum_address(p['baseToken']['address'])
-                if base_token_addr not in TOKEN_ADDRESSES: continue
-                
-                liquidity_usd = p.get('liquidity', {}).get('usd', 0)
-                volume_h24 = p.get('volume', {}).get('h24', 0)
-                if not (p.get('priceNative') and w3.to_checksum_address(p['quoteToken']['address']) == BASE_CURRENCY_ADDRESS and liquidity_usd >= MIN_LIQUIDITY_USD and volume_h24 >= MIN_VOLUME_USD):
-                    continue
-
-                if base_token_addr not in self.TOKEN_INFO:
-                    self.TOKEN_INFO[base_token_addr] = {'name': p['baseToken']['name'], 'symbol': p['baseToken']['symbol']}
-                
-                if base_token_addr not in self.watched_pools:
-                    self.watched_pools[base_token_addr] = []
-
-                price_native = float(p['priceNative'])
-                price_usd = float(p['priceUsd'])
-                base_currency_price_usd = price_usd / price_native if price_native > 1e-18 else 0
-
-                pool_details = {
-                    'dexId': p['dexId'], 'pairAddress': p['pairAddress'], 'feeBps': p.get('feeBps', 0),
-                    'pair': f"{p['baseToken']['symbol']}/{p['quoteToken']['symbol']}",
-                    'baseToken': p['baseToken'], 'quoteToken': p['quoteToken'],
-                    'liq_usd': liquidity_usd, 'base_currency_price_usd': base_currency_price_usd,
-                    'dex': p['dexId']  # Keep original dexId for router lookup
-                }
-                self.watched_pools[base_token_addr].append(pool_details)
-            
             for token_address in TOKEN_ADDRESSES:
-                token_info = self.TOKEN_INFO.get(token_address)
-                if not token_info:
-                    logging.warning(f"\n--- Token: {token_address} not found or no valid pools discovered.")
+                api_url = f"https://api.dexscreener.com/latest/dex/tokens/{token_address}"
+                logging.info(f"Querying for token: {token_address}")
+                response = requests.get(api_url)
+                response.raise_for_status()
+                j = response.json()
+                
+                all_discovered_pairs = j.get('pairs', [])
+                if not all_discovered_pairs:
+                    logging.warning(f"  -> No pairs found for {token_address}")
+                    time.sleep(1) # a small sleep to avoid hammering the API
                     continue
-                logging.info(f"\n--- Watching: {token_info['name']} ({token_info['symbol']}) ---")
-                for pool in self.watched_pools.get(token_address, []):
-                    dex_name = self._get_dex_name_from_id(pool['dexId'])
-                    logging.info(f"  - Discovered: {dex_name:<15} | Pool: {pool['pairAddress']} | Liq: ${pool['liq_usd']:12,.2f}")
+                
+                # Process the discovered pairs for the current token
+                for p in all_discovered_pairs:
+                    base_token_addr = w3.to_checksum_address(p['baseToken']['address'])
+                    if base_token_addr != token_address: continue
+                    
+                    liquidity_usd = p.get('liquidity', {}).get('usd', 0)
+                    volume_h24 = p.get('volume', {}).get('h24', 0)
+                    if not (p.get('priceNative') and p.get('quoteToken') and p.get('quoteToken').get('address') and
+                            w3.to_checksum_address(p['quoteToken']['address']) == BASE_CURRENCY_ADDRESS and
+                            liquidity_usd >= MIN_LIQUIDITY_USD and volume_h24 >= MIN_VOLUME_USD):
+                        continue
+
+                    if base_token_addr not in self.TOKEN_INFO:
+                        self.TOKEN_INFO[base_token_addr] = {'name': p['baseToken']['name'], 'symbol': p['baseToken']['symbol']}
+                    
+                    if base_token_addr not in self.watched_pools:
+                        self.watched_pools[base_token_addr] = []
+
+                    price_native = float(p['priceNative'])
+                    price_usd = float(p['priceUsd'])
+                    base_currency_price_usd = price_usd / price_native if price_native > 1e-18 else 0
+
+                    pool_details = {
+                        'dexId': p['dexId'], 'pairAddress': p['pairAddress'], 'feeBps': p.get('feeBps', 0),
+                        'pair': f"{p['baseToken']['symbol']}/{p['quoteToken']['symbol']}",
+                        'baseToken': p['baseToken'], 'quoteToken': p['quoteToken'],
+                        'liq_usd': liquidity_usd, 'base_currency_price_usd': base_currency_price_usd,
+                        'dex': p['dexId']
+                    }
+                    self.watched_pools[base_token_addr].append(pool_details)
+                
+                # Give feedback on what was discovered for the token
+                token_info = self.TOKEN_INFO.get(token_address)
+                if token_info:
+                    logging.info(f"--- Watching: {token_info['name']} ({token_info['symbol']}) ---")
+                    if not self.watched_pools.get(token_address):
+                        logging.info("  -> No valid pools found meeting criteria.")
+                    else:
+                        for pool in self.watched_pools.get(token_address, []):
+                            dex_name = self._get_dex_name_from_id(pool['dexId'])
+                            logging.info(f"  - Discovered: {dex_name:<15} | Pool: {pool['pairAddress']} | Liq: ${pool['liq_usd']:12,.2f}")
+                
+                time.sleep(1) # a small sleep to avoid hammering the API
+
         except Exception as e:
             logging.error(f"\nCould not fetch initial token/pool data: {e}", exc_info=True)
-            return 
+            return
         logging.info("-" * 50)
 
         if check_dex:
