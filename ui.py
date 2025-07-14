@@ -46,7 +46,7 @@ def start_bot():
         )
         st.session_state.bot_thread.start()
         st.toast("Bot started!", icon="🚀")
-        st.experimental_rerun()
+        st.rerun()
 
 # --- UI Layout ---
 st.title("🤖 DEX Arbitrage Bot Dashboard")
@@ -86,4 +86,4 @@ while True:
         st.text_area("Logs", value=log_contents, height=400, disabled=True)
 
     time.sleep(10)
-    st.experimental_rerun()
+    st.rerun()
