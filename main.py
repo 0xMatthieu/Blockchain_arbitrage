@@ -145,33 +145,28 @@ class ArbitrageBot:
                 logging.info("-" * 50)
                 last_summary_print_time = time.time()
 
-            try:
-                # Batch API call for all tokens at once
-                token_list_str = ",".join(self.TOKEN_INFO.keys())
-                api_url = f"https://api.dexscreener.com/latest/dex/tokens/{token_list_str}"
-                response = requests.get(api_url)
-                response.raise_for_status()
-                j = response.json()
+            # --- Main Polling Logic ---
+            # Loop through each token and poll its data individually to get all pairs.
+            for token_address in list(self.TOKEN_INFO.keys()):
+                # Check if bot was stopped during the loop
+                if not self.running:
+                    break
                 
-                all_pairs = j.get('pairs', [])
-                if not all_pairs:
-                    logging.info("No pairs found in batched API response.")
-                    time.sleep(POLL_INTERVAL)
-                    continue
-                
-                pairs_by_token = {addr: [] for addr in self.TOKEN_INFO}
-                for p in all_pairs:
-                    base_token_addr = w3.to_checksum_address(p['baseToken']['address'])
-                    if base_token_addr in pairs_by_token:
-                        pairs_by_token[base_token_addr].append(p)
-
-                for token_address, current_pairs_raw in pairs_by_token.items():
-                    token_symbol = self.TOKEN_INFO[token_address]['symbol']
+                token_symbol = self.TOKEN_INFO[token_address]['symbol']
+                try:
+                    api_url = f"https://api.dexscreener.com/latest/dex/tokens/{token_address}"
+                    response = requests.get(api_url)
+                    response.raise_for_status()
+                    j = response.json()
                     
+                    current_pairs_raw = j.get('pairs', [])
                     if not current_pairs_raw:
-                        logging.info(f"[{token_symbol}] No pairs found for this token in batched response.")
+                        logging.info(f"[{token_symbol}] No pairs found on DexScreener.")
+                        # Clear old data from UI if no pairs are found
+                        self.analyze_and_trade([], token_address)
+                        time.sleep(POLL_INTERVAL)
                         continue
-                        
+
                     valid_pairs = []
                     for p in current_pairs_raw:
                         liquidity_usd = p.get('liquidity', {}).get('usd', 0)
@@ -198,17 +193,22 @@ class ArbitrageBot:
                     if valid_pairs:
                         self.analyze_and_trade(valid_pairs, token_address)
                     else:
-                        pair_symbol = f"{current_pairs_raw[0]['baseToken']['symbol']}/{current_pairs_raw[0]['quoteToken']['symbol']}"
-                        logging.info(f"[{token_symbol}] {pair_symbol:<20} | No valid/liquid pools found.")
-            
-            except requests.exceptions.RequestException as e:
-                logging.warning(f"API Error during batch poll: {e}")
-                time.sleep(POLL_INTERVAL_ERROR)
-            except Exception as e:
-                logging.error(f"App Error during batch poll: {e}", exc_info=True)
-                time.sleep(POLL_INTERVAL_ERROR)
+                        # This handles the case where pairs are returned, but none meet the liquidity/volume criteria.
+                        logging.info(f"[{token_symbol}] No pairs found meeting liquidity/volume criteria.")
+                        self.analyze_and_trade([], token_address)
 
-            time.sleep(POLL_INTERVAL)
+                except requests.exceptions.RequestException as e:
+                    logging.warning(f"API Error fetching {token_symbol}: {e}")
+                    # Clear data for this token on error to avoid staleness
+                    self.analyze_and_trade([], token_address)
+                    time.sleep(POLL_INTERVAL_ERROR) # Longer sleep on API error
+                except Exception as e:
+                    logging.error(f"App Error processing {token_symbol}: {e}", exc_info=True)
+                    self.analyze_and_trade([], token_address)
+                    time.sleep(POLL_INTERVAL_ERROR)
+                
+                # Sleep between each token poll to respect rate limits
+                time.sleep(POLL_INTERVAL)
 
 
 if __name__ == "__main__":
