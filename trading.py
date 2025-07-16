@@ -9,7 +9,7 @@ from abi import (
     ERC20_ABI, UNISWAP_V2_ROUTER_ABI, UNISWAP_V3_ROUTER_ABI, SOLIDLY_ROUTER_ABI,
     SOLIDLY_FACTORY_ABI, UNISWAP_V3_POOL_ABI, UNISWAP_V3_FACTORY_ABI, SOLIDLY_PAIR_ABI,
     UNISWAP_V3_QUOTER_ABI, ONEINCH_V6_ROUTER_ABI,
-    ALIENBASE_V2_ROUTER_ABI
+    ALIENBASE_V2_ROUTER_ABI, BALANCER_V2_ROUTER_ABI, BALANCER_POOL_ABI
 )
 from dex_utils import find_router_info
 
@@ -126,6 +126,57 @@ def _prepare_alien_base_swap(
         amount_in_wei, amount_out_min_wei, path, account.address, int(time.time()) + 300
     )
     return swap_function, amount_out_min_wei
+
+def _prepare_balancer_v2_swap(
+        router_info: dict,
+        amount_in_wei: int,
+        token_in: str,
+        token_out: str,
+        pair_address: str
+    ):
+    """Prepares a swap for a Balancer V2-style DEX (e.g., Swaap)."""
+    if not pair_address:
+        raise ValueError("Balancer V2 swaps require a pair_address (pool address).")
+
+    logging.info(f"  - Balancer V2 router detected. Using pool: {pair_address}")
+
+    # Get the poolId from the pool contract
+    pool_contract = w3.eth.contract(address=pair_address, abi=BALANCER_POOL_ABI)
+    pool_id = pool_contract.functions.getPoolId().call()
+
+    router_contract = w3.eth.contract(address=router_info['address'], abi=BALANCER_V2_ROUTER_ABI)
+    
+    # For a GIVEN_IN swap, we specify the exact input amount.
+    swap_kind = 0  # 0 for GIVEN_IN
+
+    single_swap = (
+        pool_id,
+        swap_kind,
+        token_in,
+        token_out,
+        amount_in_wei,
+        b''  # userData
+    )
+
+    # Funds are managed by the wallet, not the Vault's internal balance.
+    funds = (
+        account.address,  # sender
+        False,            # fromInternalBalance
+        account.address,  # recipient
+        False,            # toInternalBalance
+    )
+
+    amount_out_min_wei = 0  # For fast swaps, we don't check for a minimum output.
+    deadline = int(time.time()) + 300
+    
+    logging.info(f"  - Balancer V2 Min Amount Out (wei): {amount_out_min_wei} (fast mode)")
+    
+    swap_function = router_contract.functions.swap(
+        single_swap, funds, amount_out_min_wei, deadline
+    )
+    
+    return swap_function, amount_out_min_wei
+
 
 def _prepare_uniswap_v2_swap(router_info, amount_in_wei, path, pair_address: str = None):
     """Prepares a swap transaction for a Uniswap V2-style DEX, skipping quotes for speed."""
@@ -384,6 +435,8 @@ def execute_trade(buy_pool, sell_pool, spread, token_address, token_info):
         elif buy_router_info['version'] == 2:
             if router_type == 'solidly':
                 swap_function, _ = _prepare_solidly_swap(buy_dex_name, buy_router_info, amount_in_wei, BASE_CURRENCY_ADDRESS, token_address, pair_address=buy_pool['pairAddress'])
+            elif router_type == 'balancer_v2':
+                swap_function, _ = _prepare_balancer_v2_swap(buy_router_info, amount_in_wei, BASE_CURRENCY_ADDRESS, token_address, pair_address=buy_pool['pairAddress'])
             else: # Default to uniswapv2
                 swap_function, _ = _prepare_uniswap_v2_swap(buy_router_info, amount_in_wei, [BASE_CURRENCY_ADDRESS, token_address], pair_address=buy_pool['pairAddress'])
         elif buy_router_info['version'] == 3:
@@ -436,6 +489,8 @@ def execute_trade(buy_pool, sell_pool, spread, token_address, token_info):
         elif sell_router_info['version'] == 2:
             if router_type_sell == 'solidly':
                 sell_swap_function, _ = _prepare_solidly_swap(sell_dex_name, sell_router_info, amount_received_wei, token_address, BASE_CURRENCY_ADDRESS, pair_address=sell_pool['pairAddress'])
+            elif router_type_sell == 'balancer_v2':
+                sell_swap_function, _ = _prepare_balancer_v2_swap(sell_router_info, amount_received_wei, token_address, BASE_CURRENCY_ADDRESS, pair_address=sell_pool['pairAddress'])
             else: # Default to uniswapv2
                 sell_swap_function, _ = _prepare_uniswap_v2_swap(sell_router_info, amount_received_wei, [token_address, BASE_CURRENCY_ADDRESS], pair_address=sell_pool['pairAddress'])
         elif sell_router_info['version'] == 3:

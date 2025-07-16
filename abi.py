@@ -426,6 +426,17 @@ MAVERICK_ROUTER_ABI = [
 # :contentReference[oaicite:2]{index=2}
 
 
+# Minimal ABI to get a Balancer pool's ID
+BALANCER_POOL_ABI = [
+    {
+        "inputs": [],
+        "name": "getPoolId",
+        "outputs": [{"internalType": "bytes32", "name": "", "type": "bytes32"}],
+        "stateMutability": "view",
+        "type": "function"
+    }
+]
+
 # ────────────────────────────────── SWAAP Vault (Balancer-style) ──────────────────────────────────
 BALANCER_V2_ROUTER_ABI = [
     {   # SingleSwap
