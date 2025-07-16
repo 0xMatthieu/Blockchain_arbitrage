@@ -226,99 +226,6 @@ UNISWAP_V3_FACTORY_ABI = [
     }
 ]
 
-
-# Minimal ABI for Alien Base Router (V3 fork)
-ALIEN_BASE_ROUTER_ABI = [
-    {
-        "inputs": [
-            {
-                "components": [
-                    {"internalType": "address", "name": "tokenIn", "type": "address"},
-                    {"internalType": "address", "name": "tokenOut", "type": "address"},
-                    {"internalType": "uint24", "name": "fee", "type": "uint24"},
-                    {"internalType": "address", "name": "recipient", "type": "address"},
-                    {"internalType": "uint256", "name": "deadline", "type": "uint256"},
-                    {"internalType": "uint256", "name": "amountIn", "type": "uint256"},
-                    {"internalType": "uint256", "name": "amountOutMinimum", "type": "uint256"},
-                    {"internalType": "uint160", "name": "sqrtPriceLimitX96", "type": "uint160"}
-                ],
-                "internalType": "struct ISwapRouter.ExactInputSingleParams",
-                "name": "params",
-                "type": "tuple"
-            }
-        ],
-        "name": "exactInputSingle",
-        "outputs": [{"internalType": "uint256", "name": "amountOut", "type": "uint256"}],
-        "stateMutability": "payable",
-        "type": "function"
-    }
-]
-
-# Minimal ABI for an Alien Base V3 pool to parse Swap events and check slot0
-ALIEN_BASE_V3_POOL_ABI = [
-    {
-        "anonymous": False,
-        "inputs": [
-            {"indexed": True, "internalType": "address", "name": "sender", "type": "address"},
-            {"indexed": True, "internalType": "address", "name": "recipient", "type": "address"},
-            {"indexed": False, "internalType": "int256", "name": "amount0", "type": "int256"},
-            {"indexed": False, "internalType": "int256", "name": "amount1", "type": "int256"},
-            {"indexed": False, "internalType": "uint160", "name": "sqrtPriceX96", "type": "uint160"},
-            {"indexed": False, "internalType": "uint128", "name": "liquidity", "type": "uint128"},
-            {"indexed": False, "internalType": "int24", "name": "tick", "type": "int24"}
-        ],
-        "name": "Swap",
-        "type": "event"
-    },
-    {
-        "inputs": [],
-        "name": "slot0",
-        "outputs": [
-            {"internalType": "uint160", "name": "sqrtPriceX96", "type": "uint160"},
-            {"internalType": "int24", "name": "tick", "type": "int24"},
-            {"internalType": "uint16", "name": "observationIndex", "type": "uint16"},
-            {"internalType": "uint16", "name": "observationCardinality", "type": "uint16"},
-            {"internalType": "uint16", "name": "observationCardinalityNext", "type": "uint16"},
-            {"internalType": "uint8", "name": "feeProtocol", "type": "uint8"},
-            {"internalType": "bool", "name": "unlocked", "type": "bool"}
-        ],
-        "stateMutability": "view",
-        "type": "function"
-    },
-    {
-        "name": "liquidity",
-        "type": "function",
-        "stateMutability": "view",
-        "inputs": [],
-        "outputs": [
-            {"name": "", "type": "uint128"}
-        ]
-    },
-    {
-        "name": "fee",
-        "type": "function",
-        "stateMutability": "view",
-        "inputs": [],
-        "outputs": [{"name": "", "type": "uint24"}]
-    }
-]
-
-# Minimal ABI for an Alien Base V3 factory to find pools
-ALIEN_BASE_V3_FACTORY_ABI = [
-    {
-        "inputs": [
-            {"internalType": "address", "name": "tokenA", "type": "address"},
-            {"internalType": "address", "name": "tokenB", "type": "address"},
-            {"internalType": "uint24", "name": "fee", "type": "uint24"}
-        ],
-        "name": "getPool",
-        "outputs": [{"internalType": "address", "name": "pool", "type": "address"}],
-        "stateMutability": "view",
-        "type": "function"
-    }
-]
-
-
 # Minimal ABI for a Solidly-style router (e.g., Aerodrome)
 SOLIDLY_ROUTER_ABI = [
     {
@@ -415,43 +322,6 @@ SOLIDLY_PAIR_ABI = [
     }
 ]
 
-PANCAKE_V3_POOL_ABI = [
-    # ----- slot0 (unchanged selector 0x3850c7bd) ---------------------------
-    {
-        "name": "slot0",
-        "type": "function",
-        "stateMutability": "view",
-        "inputs": [],
-        "outputs": [
-            {"name": "sqrtPriceX96",             "type": "uint160"},
-            {"name": "tick",                     "type": "int24"},
-            {"name": "observationIndex",         "type": "uint16"},
-            {"name": "observationCardinality",   "type": "uint16"},
-            {"name": "observationCardinalityNext","type": "uint16"},
-            {"name": "feeProtocol",              "type": "uint32"},   # Pancake uses uint32 here
-            {"name": "unlocked",                 "type": "bool"}
-        ]
-    },
-    # ----- liquidity (selector 0x1a686502) -------------------------------
-    {
-        "name": "liquidity",
-        "type": "function",
-        "stateMutability": "view",
-        "inputs": [],
-        "outputs": [
-            {"name": "", "type": "uint128"}
-        ]
-    },
-    # ----- fee (selector 0ddf2525) --------------------------------------
-    {
-        "name": "fee",
-        "type": "function",
-        "stateMutability": "view",
-        "inputs": [],
-        "outputs": [{"name": "", "type": "uint24"}]
-    }
-]
-
 # 1inch Aggregation Router V6 – minimal ABI (swap only)
 ONEINCH_V6_ROUTER_ABI = [
     {
@@ -480,5 +350,121 @@ ONEINCH_V6_ROUTER_ABI = [
             {"name": "returnAmount", "type": "uint256"},
             {"name": "spentAmount",  "type": "uint256"}
         ]
+    }
+]
+
+# ───────────────────────────── ALIENBASE Uniswap-V2 Router ────────────────────
+ALIENBASE_V2_ROUTER_ABI = [
+    {   # swapExactTokensForTokens
+        "inputs": [
+            {"name": "amountIn",      "type": "uint256"},
+            {"name": "amountOutMin",  "type": "uint256"},
+            {"name": "path",          "type": "address[]"},
+            {"name": "to",            "type": "address"},
+            {"name": "deadline",      "type": "uint256"}
+        ],
+        "name": "swapExactTokensForTokens",
+        "outputs": [{"name": "amounts", "type": "uint256[]"}],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {   # swapExactETHForTokens
+        "inputs": [
+            {"name": "amountOutMin",  "type": "uint256"},
+            {"name": "path",          "type": "address[]"},
+            {"name": "to",            "type": "address"},
+            {"name": "deadline",      "type": "uint256"}
+        ],
+        "name": "swapExactETHForTokens",
+        "outputs": [{"name": "amounts", "type": "uint256[]"}],
+        "stateMutability": "payable",
+        "type": "function"
+    },
+    {   # getAmountsOut - useful for quoting
+        "inputs": [
+            {"name": "amountIn", "type": "uint256"},
+            {"name": "path",     "type": "address[]"}
+        ],
+        "name": "getAmountsOut",
+        "outputs": [{"name": "amounts", "type": "uint256[]"}],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {   # factory() view
+        "inputs": [],
+        "name": "factory",
+        "outputs": [{"name": "", "type": "address"}],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {   # WETH() view
+        "inputs": [],
+        "name": "WETH",
+        "outputs": [{"name": "", "type": "address"}],
+        "stateMutability": "view",
+        "type": "function"
+    }
+]
+
+# ─────────────────────────────── MAVERICK V1/V2 Router ─────────────────────────
+# exactInputSingle is the most common path-encoded swap call
+MAVERICK_ROUTER_ABI = [
+    {
+        "name": "exactInputSingle",
+        "type": "function",
+        "stateMutability": "payable",
+        "inputs": [
+            {"name": "recipient",         "type": "address"},
+            {"name": "pool",              "type": "address"},  # IMaverickV2Pool
+            {"name": "tokenAIn",          "type": "bool"},
+            {"name": "amountIn",          "type": "uint256"},
+            {"name": "amountOutMinimum",  "type": "uint256"}
+        ],
+        "outputs": [{"name": "amountOut", "type": "uint256"}]
+    }
+]
+# :contentReference[oaicite:2]{index=2}
+
+
+# ────────────────────────────────── SWAAP Vault (Balancer-style) ──────────────────────────────────
+BALANCER_V2_ROUTER_ABI = [
+    {   # SingleSwap
+        "name": "swap",
+        "type": "function",
+        "stateMutability": "nonpayable",
+        "inputs": [
+            {   # struct SingleSwap
+                "name": "singleSwap",
+                "type": "tuple",
+                "components": [
+                    {"name": "poolId",     "type": "bytes32"},
+                    {"name": "kind",       "type": "uint8"},      # 0 = GIVEN_IN, 1 = GIVEN_OUT
+                    {"name": "assetIn",    "type": "address"},
+                    {"name": "assetOut",   "type": "address"},
+                    {"name": "amount",     "type": "uint256"},
+                    {"name": "userData",   "type": "bytes"}
+                ]
+            },
+            {   # struct FundManagement
+                "name": "funds",
+                "type": "tuple",
+                "components": [
+                    {"name": "sender",              "type": "address"},
+                    {"name": "fromInternalBalance", "type": "bool"},
+                    {"name": "recipient",           "type": "address"},
+                    {"name": "toInternalBalance",   "type": "bool"}
+                ]
+            },
+            {"name": "limit",     "type": "uint256"},
+            {"name": "deadline",  "type": "uint256"}
+        ],
+        "outputs": [{"name": "amountCalculated", "type": "uint256"}]
+    },
+    {   # WETH() helper view (often needed for wrapping/unwrapping logic)
+        "name": "WETH",
+        "type": "function",
+        "stateMutability": "view",
+        "inputs": [],
+        "outputs": [{"name": "", "type": "address"}]
     }
 ]

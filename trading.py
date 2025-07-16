@@ -1,31 +1,17 @@
 import time
 import logging
 from web3.logs import DISCARD
-from web3.exceptions import ContractLogicError
 from config import (
     w3, account, PRIVATE_KEY, MAX_GAS_LIMIT, DEX_ROUTERS,
-    BASE_CURRENCY_ADDRESS, TRADE_AMOUNT_BASE_TOKEN, SLIPPAGE_TOLERANCE_PERCENT,
-    RPC_MAX_RETRIES, RPC_BACKOFF_FACTOR, BOT_WALLET
+    BASE_CURRENCY_ADDRESS, TRADE_AMOUNT_BASE_TOKEN
 )
 from abi import (
     ERC20_ABI, UNISWAP_V2_ROUTER_ABI, UNISWAP_V3_ROUTER_ABI, SOLIDLY_ROUTER_ABI,
     SOLIDLY_FACTORY_ABI, UNISWAP_V3_POOL_ABI, UNISWAP_V3_FACTORY_ABI, SOLIDLY_PAIR_ABI,
-    UNISWAP_V3_QUOTER_ABI, PANCAKE_V3_POOL_ABI, ONEINCH_V6_ROUTER_ABI,
+    UNISWAP_V3_QUOTER_ABI, ONEINCH_V6_ROUTER_ABI,
     ALIENBASE_V2_ROUTER_ABI
 )
 from dex_utils import find_router_info
-
-from eth_abi import decode        # already inside web3’s deps
-from hexbytes import HexBytes
-from web3.exceptions import ContractLogicError
-
-def _get_v3_pool_abi(dex_name):
-    """Selects the correct V3 pool ABI based on the DEX name."""
-    if 'pancake' in dex_name.lower():
-        logging.info("  - Using PancakeSwap V3 Pool ABI.")
-        return PANCAKE_V3_POOL_ABI
-    logging.info("  - Using Uniswap V3 Pool ABI.")
-    return UNISWAP_V3_POOL_ABI
 
 def _prepare_1inch_swap(router_info: dict, amount_in_wei: int, token_in: str, token_out: str):
     """
@@ -182,7 +168,7 @@ def _prepare_uniswap_v3_swap(
     
     if pair_address and w3.eth.get_code(pair_address):
         logging.info(f"  - Using provided pool address: {pair_address}")
-        pool_contract = w3.eth.contract(address=pair_address, abi=_get_v3_pool_abi(dex_name))
+        pool_contract = w3.eth.contract(address=pair_address, abi=UNISWAP_V3_POOL_ABI)
         try:
             pool_fee = pool_contract.functions.fee().call()
             if fee_bps_hint and fee_bps_hint != pool_fee:
@@ -204,7 +190,7 @@ def _prepare_uniswap_v3_swap(
             addr = factory.functions.getPool(token_in, token_out, fee).call()
             if addr and addr != zero and w3.eth.get_code(addr):
                 # Found a potential pool, now check its liquidity before selecting it.
-                temp_pool = w3.eth.contract(address=addr, abi=_get_v3_pool_abi(dex_name))
+                temp_pool = w3.eth.contract(address=addr, abi=UNISWAP_V3_POOL_ABI)
                 try:
                     liquidity = temp_pool.functions.liquidity().call()
                     if liquidity > 0:
@@ -222,7 +208,7 @@ def _prepare_uniswap_v3_swap(
     # ------------------------------------------------------------------ #
     # ② sanity-check pool status (slot0 & liquidity)
     # ------------------------------------------------------------------ #
-    pool = w3.eth.contract(pool_address, abi=_get_v3_pool_abi(dex_name))
+    pool = w3.eth.contract(pool_address, abi=UNISWAP_V3_POOL_ABI)
     sqrt_price_x96, *_ = pool.functions.slot0().call()
     if sqrt_price_x96 == 0:
         raise ValueError("Pool exists but never initialised (sqrtPriceX96 == 0)")
@@ -274,7 +260,7 @@ def _parse_receipt_for_amount_out(receipt, router_info, dex_name, target_token_a
                     break
             
             if pool_address:
-                v3_pool_abi = _get_v3_pool_abi(dex_name)
+                v3_pool_abi = UNISWAP_V3_POOL_ABI
                 pool_contract = w3.eth.contract(address=pool_address, abi=v3_pool_abi)
                 swap_events = pool_contract.events.Swap().process_receipt(receipt, errors=DISCARD)
                 for event in swap_events:
