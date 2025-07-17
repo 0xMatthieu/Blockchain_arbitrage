@@ -418,7 +418,7 @@ def execute_trade(buy_pool, sell_pool, spread, token_address, token_info):
 
         # --- Transaction Preparation ---
         chain_id = w3.eth.chain_id
-        router_type = buy_router_info.get('type', 'uniswapv2')
+        router_type = buy_router_info.get('type', 'uniswap_v2')
         buy_txn = None
 
         max_priority_fee = w3.eth.max_priority_fee
