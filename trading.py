@@ -260,11 +260,23 @@ def _prepare_uniswap_v3_swap(
     # ② sanity-check pool status (slot0 & liquidity)
     # ------------------------------------------------------------------ #
     pool = w3.eth.contract(pool_address, abi=UNISWAP_V3_POOL_ABI)
-    sqrt_price_x96, *_ = pool.functions.slot0().call()
+    try:
+        sqrt_price_x96, *_ = pool.functions.slot0().call()
+    except Exception as e:
+        # Some V3 forks (like PancakeSwap) might have a slightly different slot0 return signature.
+        # If we can't decode it, we can't proceed with this pool.
+        logging.warning(f"  - Could not decode slot0 for pool {pool_address} on {dex_name}. It might be an incompatible V3 fork. Error: {e}")
+        raise ValueError(f"Could not decode slot0 for pool {pool_address}")
+
     if sqrt_price_x96 == 0:
         raise ValueError("Pool exists but never initialised (sqrtPriceX96 == 0)")
 
-    liquidity = pool.functions.liquidity().call()
+    try:
+        liquidity = pool.functions.liquidity().call()
+    except Exception as e:
+        logging.warning(f"  - Could not read liquidity for pool {pool_address} on {dex_name}. It might be an incompatible V3 fork. Error: {e}")
+        raise ValueError(f"Could not read liquidity for pool {pool_address}")
+
     if liquidity == 0:
         raise ValueError("Pool initialised but has zero active liquidity")
 
