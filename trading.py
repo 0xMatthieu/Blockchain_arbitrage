@@ -9,7 +9,8 @@ from abi import (
     ERC20_ABI, UNISWAP_V2_ROUTER_ABI, UNISWAP_V3_ROUTER_ABI, SOLIDLY_ROUTER_ABI,
     SOLIDLY_FACTORY_ABI, UNISWAP_V3_POOL_ABI, UNISWAP_V3_FACTORY_ABI, SOLIDLY_PAIR_ABI,
     UNISWAP_V3_QUOTER_ABI, ONEINCH_V6_ROUTER_ABI,
-    ALIENBASE_V2_ROUTER_ABI, BALANCER_V2_ROUTER_ABI, BALANCER_POOL_ABI
+    ALIENBASE_V2_ROUTER_ABI, BALANCER_V2_ROUTER_ABI, BALANCER_POOL_ABI,
+    PANCAKE_V3_FACTORY_ABI, PANCAKE_V3_POOL_ABI
 )
 from dex_utils import find_router_info
 
@@ -204,13 +205,23 @@ def _prepare_uniswap_v3_swap(
     Prepares a Uniswap-V3 style swap and **never** dies on
     `quoteExactInputSingle` “execution reverted, no data”.
     """
+    router_type = router_info.get('type')
+    if router_type == 'pancakeswap_v3':
+        factory_abi = PANCAKE_V3_FACTORY_ABI
+        pool_abi = PANCAKE_V3_POOL_ABI
+        logging.info(f"  - Using PancakeSwap V3 ABIs for {dex_name}.")
+    else: # Default to Uniswap V3
+        factory_abi = UNISWAP_V3_FACTORY_ABI
+        pool_abi = UNISWAP_V3_POOL_ABI
+        if router_type not in ['uniswap_v3', None]:
+            logging.info(f"  - Using default Uniswap V3 ABIs for '{dex_name}' (type: {router_type}).")
 
     factory_address = router_info.get("factory")
     if not factory_address:
         raise ValueError(f"V3 DEX '{dex_name}' requires a 'factory' address")
 
     logging.info(f"  - V3 DEX detected. Querying factory {factory_address} …")
-    factory = w3.eth.contract(factory_address, abi=UNISWAP_V3_FACTORY_ABI)
+    factory = w3.eth.contract(factory_address, abi=factory_abi)
 
     # ------------------------------------------------------------------ #
     # ① find a pool that actually exists (code size > 0)
@@ -219,7 +230,7 @@ def _prepare_uniswap_v3_swap(
     
     if pair_address and w3.eth.get_code(pair_address):
         logging.info(f"  - Using provided pool address: {pair_address}")
-        pool_contract = w3.eth.contract(address=pair_address, abi=UNISWAP_V3_POOL_ABI)
+        pool_contract = w3.eth.contract(address=pair_address, abi=pool_abi)
         try:
             pool_fee = pool_contract.functions.fee().call()
             if fee_bps_hint and fee_bps_hint != pool_fee:
@@ -241,7 +252,7 @@ def _prepare_uniswap_v3_swap(
             addr = factory.functions.getPool(token_in, token_out, fee).call()
             if addr and addr != zero and w3.eth.get_code(addr):
                 # Found a potential pool, now check its liquidity before selecting it.
-                temp_pool = w3.eth.contract(address=addr, abi=UNISWAP_V3_POOL_ABI)
+                temp_pool = w3.eth.contract(address=addr, abi=pool_abi)
                 try:
                     liquidity = temp_pool.functions.liquidity().call()
                     if liquidity > 0:
@@ -259,7 +270,7 @@ def _prepare_uniswap_v3_swap(
     # ------------------------------------------------------------------ #
     # ② sanity-check pool status (slot0 & liquidity)
     # ------------------------------------------------------------------ #
-    pool = w3.eth.contract(pool_address, abi=UNISWAP_V3_POOL_ABI)
+    pool = w3.eth.contract(pool_address, abi=pool_abi)
     try:
         sqrt_price_x96, *_ = pool.functions.slot0().call()
     except Exception as e:
