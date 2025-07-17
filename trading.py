@@ -292,80 +292,6 @@ def _prepare_uniswap_v3_swap(
     # Gas estimation checks removed by user request.
     return swap_fn, amount_out_min
 
-def _parse_receipt_for_amount_out(receipt, router_info, dex_name, target_token_address, target_decimals):
-    """Parses a transaction receipt to find the amount of tokens received."""
-    amount_received_wei = 0
-    TRANSFER_EVENT_TOPIC = w3.keccak(text="Transfer(address,address,uint256)")
-
-    # V3: Try parsing the Swap event first for accuracy
-    if router_info['version'] == 3:
-        try:
-            pool_address = None
-            for log in receipt.logs:
-                if log.address == BASE_CURRENCY_ADDRESS and \
-                   len(log.topics) == 3 and \
-                   log.topics[0] == TRANSFER_EVENT_TOPIC and \
-                   w3.to_checksum_address('0x' + log.topics[1].hex()[-40:]) == account.address:
-                    pool_address = w3.to_checksum_address('0x' + log.topics[2].hex()[-40:])
-                    logging.info(f"  - Inferred V3 pool address: {pool_address}")
-                    break
-            
-            if pool_address:
-                v3_pool_abi = UNISWAP_V3_POOL_ABI
-                pool_contract = w3.eth.contract(address=pool_address, abi=v3_pool_abi)
-                swap_events = pool_contract.events.Swap().process_receipt(receipt, errors=DISCARD)
-                for event in swap_events:
-                    if event['args']['recipient'] == account.address:
-                        amount0, amount1 = event['args']['amount0'], event['args']['amount1']
-                        amount_received = abs(min(amount0, amount1))
-                        if amount_received > 0:
-                            amount_received_wei = amount_received
-                            logging.info(f"  - Parsed amount from V3 Swap event: {amount_received_wei / (10**target_decimals):.4f} tokens.")
-                            break
-        except Exception as e:
-             logging.warning(f"  - Error parsing V3 Swap event from receipt: {e}. Falling back to other methods.")
-
-    # Try parsing V2 Swap event if V3 failed or for V2 routers
-    if amount_received_wei == 0:
-        try:
-            SWAP_EVENT_TOPIC = w3.keccak(text="Swap(address,uint256,uint256,uint256,uint256,address)").hex()
-            v2_pair_contract = w3.eth.contract(abi=SOLIDLY_PAIR_ABI)
-            swap_event_obj = v2_pair_contract.events.Swap()
-            for log in receipt.logs:
-                if log.topics and log.topics[0].hex() == SWAP_EVENT_TOPIC:
-                    try:
-                        parsed = swap_event_obj.process_log(log)
-                        if w3.to_checksum_address(parsed['args']['to']) == account.address:
-                            a0_out, a1_out = parsed['args']['amount0Out'], parsed['args']['amount1Out']
-                            amount_out = a0_out or a1_out
-                            if amount_out > 0:
-                                amount_received_wei = amount_out
-                                logging.info(f"  - Parsed V2 Swap event → amount out: {amount_received_wei / (10**target_decimals):.6f}")
-                                break
-                    except Exception:
-                        continue # Log topic matched, but ABI did not.
-        except Exception as e:
-            logging.warning(f"  - Could not parse V2 Swap event: {e}. Falling back to Transfer event.")
-
-    # Fallback to simple Transfer event parsing
-    if amount_received_wei == 0:
-        if router_info['version'] == 3:
-            logging.warning("  - V3/V2 Swap event parsing failed or found no amount. Trying generic Transfer event parsing...")
-        else:
-            logging.info("  - V2 Swap event not found/parsed. Falling back to simple Transfer event parsing...")
-        try:
-            for log in receipt.logs:
-                if len(log.topics) == 3 and log.topics[0] == TRANSFER_EVENT_TOPIC and log.address == target_token_address:
-                    recipient_address = w3.to_checksum_address('0x' + log.topics[2].hex()[-40:])
-                    if recipient_address == account.address:
-                        amount_received_wei = w3.codec.decode(['uint256'], log.data)[0]
-                        logging.info(f"  - Found transfer of {amount_received_wei / (10**target_decimals):.4f} tokens to wallet.")
-                        break
-        except Exception as e:
-            logging.error(f"  - Error manually parsing transaction receipt for Transfer events: {e}")
-
-    return amount_received_wei
-
 
 def execute_trade(buy_pool, sell_pool, spread, token_address, token_info):
     logging.info("\n" + "!"*60)
@@ -415,6 +341,8 @@ def execute_trade(buy_pool, sell_pool, spread, token_address, token_info):
         logging.info(f"Step 1: Buying {token_name} ({token_address}) on {buy_dex_name} (v{buy_router_info['version']})...")
         target_token_contract = w3.eth.contract(address=token_address, abi=ERC20_ABI)
         target_decimals = target_token_contract.functions.decimals().call()
+        initial_target_token_balance = target_token_contract.functions.balanceOf(account.address).call()
+        logging.info(f"  - Initial balance of {token_name}: {initial_target_token_balance / (10**target_decimals):.6f}")
 
         # --- Transaction Preparation ---
         chain_id = w3.eth.chain_id
@@ -466,16 +394,22 @@ def execute_trade(buy_pool, sell_pool, spread, token_address, token_info):
             logging.error("  - BUY TRANSACTION FAILED (reverted). Aborting arbitrage.")
             return
 
-        logging.info("  - Buy transaction successful! Parsing receipt...")
-        amount_received_wei = _parse_receipt_for_amount_out(buy_receipt, buy_router_info, buy_dex_name, token_address, target_decimals)
+        logging.info("  - Buy transaction successful! Checking balance change...")
+        new_target_token_balance = target_token_contract.functions.balanceOf(account.address).call()
+        amount_received_wei = new_target_token_balance - initial_target_token_balance
+        logging.info(f"  - New balance of {token_name}: {new_target_token_balance / (10**target_decimals):.6f}")
+        logging.info(f"  - Amount received: {amount_received_wei / (10**target_decimals):.6f}")
 
-        if amount_received_wei == 0:
-            logging.error("  - CRITICAL: Could not determine received token amount from receipt. Aborting sell.")
+        if amount_received_wei <= 0:
+            logging.error("  - CRITICAL: No tokens received from buy transaction. Aborting sell.")
             return
         
         # --- 2. SELL TRANSACTION ---
         logging.info(f"Step 2: Selling {amount_received_wei / (10**target_decimals)} of {token_name} ({token_address}) on {sell_dex_name} (v{sell_router_info['version']})...")
         
+        initial_base_token_balance = base_token_contract.functions.balanceOf(account.address).call()
+        logging.info(f"  - Initial balance of base token: {initial_base_token_balance / (10**base_decimals):.6f}")
+
         # --- Sell Transaction Preparation ---
         router_type_sell = sell_router_info.get('type', 'uniswapv2')
         sell_txn = None
@@ -519,21 +453,22 @@ def execute_trade(buy_pool, sell_pool, spread, token_address, token_info):
         if sell_receipt['status'] == 0:
             logging.error("  - SELL TRANSACTION FAILED. You are now holding the bought tokens.")
         else:
-            logging.info("  - Sell transaction successful! Parsing receipt...")
-            final_amount_out_wei = _parse_receipt_for_amount_out(
-                sell_receipt, sell_router_info, sell_dex_name, BASE_CURRENCY_ADDRESS, base_decimals
-            )
+            logging.info("  - Sell transaction successful! Checking balance change...")
+            new_base_token_balance = base_token_contract.functions.balanceOf(account.address).call()
+            # final_amount_out_wei is the net change in balance from the sell transaction.
+            final_amount_out_wei = new_base_token_balance - initial_base_token_balance
+            logging.info(f"  - New balance of base token: {new_base_token_balance / (10**base_decimals):.6f}")
+            logging.info(f"  - Net base tokens received from sell: {final_amount_out_wei / (10**base_decimals):.6f}")
 
-            if final_amount_out_wei > 0:
-                profit_wei = final_amount_out_wei - amount_in_wei
-                profit_base_token = profit_wei / (10**base_decimals)
+            # Profit is the final amount received from the sell, minus the initial amount spent on the buy.
+            # This now implicitly includes the gas cost of the sell transaction.
+            profit_wei = final_amount_out_wei
+            profit_base_token = (final_amount_out_wei - amount_in_wei) / (10**base_decimals)
 
-                if profit_wei > 0:
-                    logging.info(f"  - SUCCESS! Arbitrage profitable. Profit: {profit_base_token:.6f} base tokens.")
-                else:
-                    logging.warning(f"  - LOSS. Arbitrage resulted in a loss of: {abs(profit_base_token):.6f} base tokens.")
+            if (final_amount_out_wei - amount_in_wei) > 0:
+                logging.info(f"  - SUCCESS! Arbitrage profitable. Profit: {profit_base_token:.6f} base tokens.")
             else:
-                logging.error("  - CRITICAL: Could not determine final amount from sell receipt. Profit/loss unknown.")
+                logging.warning(f"  - LOSS. Arbitrage resulted in a loss of: {abs(profit_base_token):.6f} base tokens.")
 
     except Exception as e:
         logging.error(f"An unexpected error occurred during trade execution: {e}", exc_info=True)
