@@ -10,7 +10,7 @@ from abi import (
     SOLIDLY_FACTORY_ABI, UNISWAP_V3_POOL_ABI, UNISWAP_V3_FACTORY_ABI, SOLIDLY_PAIR_ABI,
     UNISWAP_V3_QUOTER_ABI, ONEINCH_V6_ROUTER_ABI,
     ALIENBASE_V2_ROUTER_ABI, BALANCER_V2_ROUTER_ABI, BALANCER_POOL_ABI,
-    PANCAKE_V3_FACTORY_ABI, PANCAKE_V3_POOL_ABI, SWAAP_POOL_ABI
+    PANCAKE_V3_FACTORY_ABI, PANCAKE_V3_POOL_ABI, SWAAP_ROUTER_ABI, SWAAP_POOL_ABI
 )
 from dex_utils import find_router_info
 
@@ -196,8 +196,8 @@ def _prepare_swaap_swap(
     pool_contract = w3.eth.contract(address=pair_address, abi=SWAAP_POOL_ABI)
     pool_id = pool_contract.functions.getPoolId().call()
 
-    # Swaap uses the Balancer V2 router.
-    router_contract = w3.eth.contract(address=router_info['address'], abi=BALANCER_V2_ROUTER_ABI)
+    # Swaap uses the Swaap router.
+    router_contract = w3.eth.contract(address=router_info['address'], abi=SWAAP_ROUTER_ABI)
     
     # For a GIVEN_IN swap, we specify the exact input amount.
     swap_kind = 0  # 0 for GIVEN_IN
@@ -440,7 +440,7 @@ def execute_trade(buy_pool, sell_pool, spread, token_address, token_info):
                 swap_function, _ = _prepare_solidly_swap(buy_dex_name, buy_router_info, amount_in_wei, BASE_CURRENCY_ADDRESS, token_address, pair_address=buy_pool['pairAddress'])
             elif router_type == 'balancer_v2':
                 swap_function, _ = _prepare_balancer_v2_swap(buy_router_info, amount_in_wei, BASE_CURRENCY_ADDRESS, token_address, pair_address=buy_pool['pairAddress'])
-            elif router_type == 'swaap':
+            elif router_type == 'swaap_v2':
                 swap_function, _ = _prepare_swaap_swap(buy_router_info, amount_in_wei, BASE_CURRENCY_ADDRESS, token_address, pair_address=buy_pool['pairAddress'])
             else: # Default to uniswapv2
                 swap_function, _ = _prepare_uniswap_v2_swap(buy_router_info, amount_in_wei, [BASE_CURRENCY_ADDRESS, token_address], pair_address=buy_pool['pairAddress'])
