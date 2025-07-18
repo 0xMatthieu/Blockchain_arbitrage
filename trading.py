@@ -196,8 +196,8 @@ def _prepare_swaap_swap(
     pool_contract = w3.eth.contract(address=pair_address, abi=SWAAP_POOL_ABI)
     pool_id = pool_contract.functions.getPoolId().call()
 
-    # Swaap uses the Swaap router.
-    router_contract = w3.eth.contract(address=router_info['address'], abi=SWAAP_ROUTER_ABI)
+    # Swaap uses the Balancer V2 router.
+    router_contract = w3.eth.contract(address=router_info['address'], abi=BALANCER_V2_ROUTER_ABI)
     
     # For a GIVEN_IN swap, we specify the exact input amount.
     swap_kind = 0  # 0 for GIVEN_IN
