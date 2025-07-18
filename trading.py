@@ -80,14 +80,6 @@ def _prepare_solidly_swap(
     
     def _build_swap_fn(out_min: int):
         final_routes = [(token_in, token_out, final_is_stable, factory)]
-        if "swapExactTokensForTokensSupportingFeeOnTransferTokens" in router.functions:
-            return router.functions.swapExactTokensForTokensSupportingFeeOnTransferTokens(
-                amount_in_wei,
-                out_min,
-                final_routes,
-                account.address,
-                int(time.time()) + 300,
-            )
         return router.functions.swapExactTokensForTokens(
             amount_in_wei,
             out_min,
@@ -386,8 +378,9 @@ def _wait_for_balance_change(token_contract, owner_address, initial_balance, ret
 
 
 def execute_trade(buy_pool, sell_pool, spread, token_address, token_info):
+    token_name = token_info.get('name', token_address)
     logging.info("\n" + "!"*60)
-    logging.warning(f"!!! REAL TRADE TRIGGERED - Spread: {spread:.2f}% !!!")
+    logging.warning(f"!!! REAL TRADE TRIGGERED on {token_name} - Spread: {spread:.2f}% !!!")
     logging.info("!"*60)
 
     if not all([account, BASE_CURRENCY_ADDRESS, TRADE_AMOUNT_BASE_TOKEN > 0]):
@@ -401,6 +394,7 @@ def execute_trade(buy_pool, sell_pool, spread, token_address, token_info):
 
     if not buy_router_info or not sell_router_info:
         logging.warning(f"!!! TRADING SKIPPED: Router info for '{buy_dex_name}' or '{sell_dex_name}' not found in .env")
+        logging.warning(f"!!! TRADING SKIPPED: Debug: Router pair address is '{buy_pool['pairAddress']}' and '{sell_pool['pairAddress']}'")
         return
 
     try:
@@ -428,7 +422,6 @@ def execute_trade(buy_pool, sell_pool, spread, token_address, token_info):
             return
         logging.info(f"  - Liquidity check passed. Trade size ${trade_amount_usd:,.2f} is reasonable for both pools.")
 
-        token_name = token_info.get('name', token_address)
         # --- 1. BUY TRANSACTION ---
         logging.info(f"Step 1: Buying {token_name} ({token_address}) on {buy_dex_name} (v{buy_router_info['version']})...")
         target_token_contract = w3.eth.contract(address=token_address, abi=ERC20_ABI)

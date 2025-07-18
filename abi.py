@@ -226,6 +226,135 @@ UNISWAP_V3_FACTORY_ABI = [
     }
 ]
 
+# Minimal ABI for a Uniswap V3-style router
+PANCAKE_V3_ROUTER_ABI = [
+    {
+        "inputs": [
+            {
+                "components": [
+                    {"internalType": "address", "name": "tokenIn", "type": "address"},
+                    {"internalType": "address", "name": "tokenOut", "type": "address"},
+                    {"internalType": "uint24", "name": "fee", "type": "uint24"},
+                    {"internalType": "address", "name": "recipient", "type": "address"},
+                    {"internalType": "uint256", "name": "amountIn", "type": "uint256"},
+                    {"internalType": "uint256", "name": "amountIn", "type": "uint256"},
+                    {"internalType": "uint256", "name": "amountOutMinimum", "type": "uint256"},
+                    {"internalType": "uint160", "name": "sqrtPriceLimitX96", "type": "uint160"}
+                ],
+                "internalType": "struct ISwapRouter.ExactInputSingleParams",
+                "name": "params",
+                "type": "tuple"
+            }
+        ],
+        "name": "exactInputSingle",
+        "outputs": [{"internalType": "uint256", "name": "amountOut", "type": "uint256"}],
+        "stateMutability": "payable",
+        "type": "function"
+    }
+]
+
+# Minimal ABI for a Pancake V3-style QuoterV2
+PANCAKE_V3_QUOTER_ABI = [
+    {
+        "name": "quoteExactInputSingle",
+        "type": "function",
+        "stateMutability": "nonpayable",
+        "inputs": [{
+            "name": "params",
+            "type": "tuple",
+            "components": [
+                {"name": "tokenIn",          "type": "address"},
+                {"name": "tokenOut",         "type": "address"},
+                {"name": "fee",              "type": "uint24"},
+                {"name": "amountIn",         "type": "uint256"},
+                {"name": "sqrtPriceLimitX96","type": "uint160"}
+            ]
+        }],
+        "outputs": [
+            {"name": "amountOut",          "type": "uint256"},
+            {"name": "sqrtPriceX96After",  "type": "uint160"},
+            {"name": "ticksCrossed",       "type": "uint32"},
+            {"name": "gasEstimate",        "type": "uint256"}
+        ]
+    },
+    {
+        "name": "quoteExactInput",
+        "type": "function",
+        "stateMutability": "nonpayable",
+        "inputs": [
+            {"internalType": "bytes", "name": "path", "type": "bytes"},
+            {"internalType": "uint256", "name": "amountIn", "type": "uint256"}
+        ],
+        "outputs": [
+            {"name": "amountOut", "type": "uint256"}
+        ]
+    }
+]
+
+# Minimal ABI for a Pancake V3 pool to parse Swap events and check slot0
+PANCAKE_V3_POOL_ABI = [
+    {
+        "anonymous": False,
+        "inputs": [
+            {"indexed": True, "internalType": "address", "name": "sender", "type": "address"},
+            {"indexed": True, "internalType": "address", "name": "recipient", "type": "address"},
+            {"indexed": False, "internalType": "int256", "name": "amount0", "type": "int256"},
+            {"indexed": False, "internalType": "int256", "name": "amount1", "type": "int256"},
+            {"indexed": False, "internalType": "uint160", "name": "sqrtPriceX96", "type": "uint160"},
+            {"indexed": False, "internalType": "uint128", "name": "liquidity", "type": "uint128"},
+            {"indexed": False, "internalType": "int24", "name": "tick", "type": "int24"}
+        ],
+        "name": "Swap",
+        "type": "event"
+    },
+    {
+        "inputs": [],
+        "name": "slot0",
+        "outputs": [
+            {"internalType": "uint160", "name": "sqrtPriceX96", "type": "uint160"},
+            {"internalType": "int24", "name": "tick", "type": "int24"},
+            {"internalType": "uint16", "name": "observationIndex", "type": "uint16"},
+            {"internalType": "uint16", "name": "observationCardinality", "type": "uint16"},
+            {"internalType": "uint16", "name": "observationCardinalityNext", "type": "uint16"},
+            {"internalType": "uint8", "name": "feeProtocol", "type": "uint32"},
+            {"internalType": "bool", "name": "unlocked", "type": "bool"}
+        ],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "name": "liquidity",
+        "type": "function",
+        "stateMutability": "view",
+        "inputs": [],
+        "outputs": [
+            {"name": "", "type": "uint128"}
+        ]
+    },
+    {
+        "name": "fee",
+        "type": "function",
+        "stateMutability": "view",
+        "inputs": [],
+        "outputs": [{"name": "", "type": "uint24"}]
+    }
+]
+
+# Minimal ABI for a Pancake V3 factory to find pools
+PANCAKE_V3_FACTORY_ABI = [
+    {
+        "inputs": [
+            {"internalType": "address", "name": "tokenA", "type": "address"},
+            {"internalType": "address", "name": "tokenB", "type": "address"},
+            {"internalType": "uint24", "name": "fee", "type": "uint24"}
+        ],
+        "name": "getPool",
+        "outputs": [{"internalType": "address", "name": "pool", "type": "address"}],
+        "stateMutability": "view",
+        "type": "function"
+    }
+]
+
 # Minimal ABI for a Solidly-style router (e.g., Aerodrome)
 SOLIDLY_ROUTER_ABI = [
     {
@@ -437,45 +566,88 @@ BALANCER_POOL_ABI = [
     }
 ]
 
-# ────────────────────────────────── SWAAP Vault (Balancer-style) ──────────────────────────────────
 BALANCER_V2_ROUTER_ABI = [
-    {   # SingleSwap
-        "name": "swap",
+  {
+    "inputs": [
+      {
+        "components": [
+          { "internalType": "bytes32", "name": "poolId", "type": "bytes32" },
+          { "internalType": "uint8",   "name": "kind",   "type": "uint8" },
+          { "internalType": "address", "name": "assetIn",  "type": "address" },
+          { "internalType": "address", "name": "assetOut", "type": "address" },
+          { "internalType": "uint256", "name": "amount",   "type": "uint256" },
+          { "internalType": "bytes",   "name": "userData", "type": "bytes" }
+        ],
+        "internalType": "struct SingleSwap",
+        "name": "singleSwap",
+        "type": "tuple"
+      },
+      {
+        "components": [
+          { "internalType": "address", "name": "sender",               "type": "address" },
+          { "internalType": "bool",    "name": "fromInternalBalance", "type": "bool" },
+          { "internalType": "address", "name": "recipient",            "type": "address" },
+          { "internalType": "bool",    "name": "toInternalBalance",   "type": "bool" }
+        ],
+        "internalType": "struct FundManagement",
+        "name": "funds",
+        "type": "tuple"
+      },
+      { "internalType": "uint256", "name": "limit",    "type": "uint256" },
+      { "internalType": "uint256", "name": "deadline", "type": "uint256" }
+    ],
+    "name": "swap",
+    "outputs": [
+      {
+        "internalType": "uint256",
+        "name": "amountCalculated",
+        "type": "uint256"
+      }
+    ],
+    "stateMutability": "nonpayable",
+    "type": "function"
+  }
+]
+
+# Minimal ABI to get a Balancer pool's ID
+SWAAP_POOL_ABI = [
+    {
+        "inputs": [],
+        "name": "getPoolId",
+        "outputs": [{"internalType": "bytes32", "name": "", "type": "bytes32"}],
+        "stateMutability": "view",
+        "type": "function"
+    }
+]
+
+SWAAP_ROUTER_ABI = [
+    {
+        "name": "onSwap",
         "type": "function",
         "stateMutability": "nonpayable",
         "inputs": [
-            {   # struct SingleSwap
-                "name": "singleSwap",
+            {
+                "internalType": "struct IPoolSwapStructs.SwapRequest",
+                "name": "request",
                 "type": "tuple",
                 "components": [
-                    {"name": "poolId",     "type": "bytes32"},
-                    {"name": "kind",       "type": "uint8"},      # 0 = GIVEN_IN, 1 = GIVEN_OUT
-                    {"name": "assetIn",    "type": "address"},
-                    {"name": "assetOut",   "type": "address"},
-                    {"name": "amount",     "type": "uint256"},
-                    {"name": "userData",   "type": "bytes"}
+                    {"internalType": "uint8",   "name": "kind",               "type": "uint8"},
+                    {"internalType": "address", "name": "tokenIn",            "type": "address"},
+                    {"internalType": "address", "name": "tokenOut",           "type": "address"},
+                    {"internalType": "uint256", "name": "amount",             "type": "uint256"},
+                    {"internalType": "bytes32", "name": "poolId",             "type": "bytes32"},
+                    {"internalType": "uint256", "name": "lastChangeBlock",    "type": "uint256"},
+                    {"internalType": "address", "name": "from",               "type": "address"},
+                    {"internalType": "address", "name": "to",                 "type": "address"},
+                    {"internalType": "bytes",   "name": "userData",           "type": "bytes"}
                 ]
             },
-            {   # struct FundManagement
-                "name": "funds",
-                "type": "tuple",
-                "components": [
-                    {"name": "sender",              "type": "address"},
-                    {"name": "fromInternalBalance", "type": "bool"},
-                    {"name": "recipient",           "type": "address"},
-                    {"name": "toInternalBalance",   "type": "bool"}
-                ]
-            },
-            {"name": "limit",     "type": "uint256"},
-            {"name": "deadline",  "type": "uint256"}
+            {"internalType": "uint256", "name": "balanceTokenIn",  "type": "uint256"},
+            {"internalType": "uint256", "name": "balanceTokenOut", "type": "uint256"}
         ],
-        "outputs": [{"name": "amountCalculated", "type": "uint256"}]
-    },
-    {   # WETH() helper view (often needed for wrapping/unwrapping logic)
-        "name": "WETH",
-        "type": "function",
-        "stateMutability": "view",
-        "inputs": [],
-        "outputs": [{"name": "", "type": "address"}]
+        "outputs": [
+            {"internalType": "uint256", "name": "", "type": "uint256"}
+        ]
     }
 ]
+
