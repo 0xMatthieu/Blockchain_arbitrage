@@ -226,7 +226,7 @@ UNISWAP_V3_FACTORY_ABI = [
     }
 ]
 
-# Minimal ABI for a Uniswap V3-style router
+# Minimal ABI for a Pancake V3-style router with deadline support
 PANCAKE_V3_ROUTER_ABI = [
     {
         "inputs": [
@@ -237,14 +237,14 @@ PANCAKE_V3_ROUTER_ABI = [
                     {"internalType": "uint24", "name": "fee", "type": "uint24"},
                     {"internalType": "address", "name": "recipient", "type": "address"},
                     {"internalType": "uint256", "name": "amountIn", "type": "uint256"},
-                    {"internalType": "uint256", "name": "amountIn", "type": "uint256"},
                     {"internalType": "uint256", "name": "amountOutMinimum", "type": "uint256"},
                     {"internalType": "uint160", "name": "sqrtPriceLimitX96", "type": "uint160"}
                 ],
                 "internalType": "struct ISwapRouter.ExactInputSingleParams",
                 "name": "params",
                 "type": "tuple"
-            }
+            },
+            {"internalType": "uint256", "name": "deadline", "type": "uint256"}
         ],
         "name": "exactInputSingle",
         "outputs": [{"internalType": "uint256", "name": "amountOut", "type": "uint256"}],

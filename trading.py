@@ -10,7 +10,7 @@ from abi import (
     SOLIDLY_FACTORY_ABI, UNISWAP_V3_POOL_ABI, UNISWAP_V3_FACTORY_ABI, SOLIDLY_PAIR_ABI,
     UNISWAP_V3_QUOTER_ABI, ONEINCH_V6_ROUTER_ABI,
     ALIENBASE_V2_ROUTER_ABI, BALANCER_V2_ROUTER_ABI, BALANCER_POOL_ABI,
-    PANCAKE_V3_FACTORY_ABI, PANCAKE_V3_POOL_ABI, SWAAP_ROUTER_ABI, SWAAP_POOL_ABI
+    PANCAKE_V3_FACTORY_ABI, PANCAKE_V3_POOL_ABI, PANCAKE_V3_ROUTER_ABI, SWAAP_ROUTER_ABI, SWAAP_POOL_ABI
 )
 from dex_utils import find_router_info
 
@@ -339,22 +339,25 @@ def _prepare_uniswap_v3_swap(
 
     amount_out_min = 0
 
-    router = w3.eth.contract(router_info["address"], abi=UNISWAP_V3_ROUTER_ABI)
+    swap_params = {
+        "tokenIn": token_in,
+        "tokenOut": token_out,
+        "fee": chosen_fee,
+        "recipient": account.address,
+        "amountIn": amount_in_wei,
+        "amountOutMinimum": amount_out_min,
+        "sqrtPriceLimitX96": 0,
+    }
 
-    def _build_v3_swap_fn(min_out):
-        swap_params = {
-            "tokenIn": token_in,
-            "tokenOut": token_out,
-            "fee": chosen_fee,
-            "recipient": account.address,
-            "amountIn": amount_in_wei,
-            "amountOutMinimum": min_out,
-            "sqrtPriceLimitX96": 0,
-        }
-        return router.functions.exactInputSingle(swap_params)
-
-    logging.info(f"  - Prepare swap")
-    swap_fn = _build_v3_swap_fn(amount_out_min)
+    if router_type == 'pancakeswap_v3':
+        router = w3.eth.contract(router_info["address"], abi=PANCAKE_V3_ROUTER_ABI)
+        deadline = int(time.time()) + 300
+        logging.info(f"  - Preparing Pancake V3 swap with deadline...")
+        swap_fn = router.functions.exactInputSingle(swap_params, deadline)
+    else:  # Default to Uniswap V3
+        router = w3.eth.contract(router_info["address"], abi=UNISWAP_V3_ROUTER_ABI)
+        logging.info(f"  - Preparing Uniswap V3 swap...")
+        swap_fn = router.functions.exactInputSingle(swap_params)
 
     # Gas estimation checks removed by user request.
     return swap_fn, amount_out_min
