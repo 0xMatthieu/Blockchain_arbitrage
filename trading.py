@@ -368,6 +368,23 @@ def _prepare_uniswap_v3_swap(
     return swap_fn, amount_out_min
 
 
+def _wait_for_balance_change(token_contract, owner_address, initial_balance, retries=5, delay=1.0):
+    """
+    Waits for a token balance to change after a transaction.
+    Polls the balance with a delay to account for RPC node sync time.
+    """
+    for i in range(retries):
+        new_balance = token_contract.functions.balanceOf(owner_address).call()
+        if new_balance != initial_balance:
+            logging.info(f"  - Balance change detected on attempt {i+1}.")
+            return new_balance
+        if i < retries - 1:
+            logging.info(f"  - Balance unchanged, retrying in {delay}s... ({i+1}/{retries})")
+            time.sleep(delay)
+    logging.warning(f"  - Balance did not change after {retries} retries.")
+    return token_contract.functions.balanceOf(owner_address).call() # return last known balance
+
+
 def execute_trade(buy_pool, sell_pool, spread, token_address, token_info):
     logging.info("\n" + "!"*60)
     logging.warning(f"!!! REAL TRADE TRIGGERED - Spread: {spread:.2f}% !!!")
@@ -471,8 +488,10 @@ def execute_trade(buy_pool, sell_pool, spread, token_address, token_info):
             logging.error("  - BUY TRANSACTION FAILED (reverted). Aborting arbitrage.")
             return
 
-        logging.info("  - Buy transaction successful! Checking balance change...")
-        new_target_token_balance = target_token_contract.functions.balanceOf(account.address).call()
+        logging.info("  - Buy transaction successful! Checking for balance change...")
+        new_target_token_balance = _wait_for_balance_change(
+            target_token_contract, account.address, initial_target_token_balance
+        )
         amount_received_wei = new_target_token_balance - initial_target_token_balance
         logging.info(f"  - New balance of {token_name}: {new_target_token_balance / (10**target_decimals):.6f}")
         logging.info(f"  - Amount received: {amount_received_wei / (10**target_decimals):.6f}")
@@ -532,8 +551,10 @@ def execute_trade(buy_pool, sell_pool, spread, token_address, token_info):
         if sell_receipt['status'] == 0:
             logging.error("  - SELL TRANSACTION FAILED. You are now holding the bought tokens.")
         else:
-            logging.info("  - Sell transaction successful! Checking balance change...")
-            new_base_token_balance = base_token_contract.functions.balanceOf(account.address).call()
+            logging.info("  - Sell transaction successful! Checking for balance change...")
+            new_base_token_balance = _wait_for_balance_change(
+                base_token_contract, account.address, initial_base_token_balance
+            )
             # final_amount_out_wei is the net change in balance from the sell transaction.
             final_amount_out_wei = new_base_token_balance - initial_base_token_balance
             logging.info(f"  - New balance of base token: {new_base_token_balance / (10**base_decimals):.6f}")
