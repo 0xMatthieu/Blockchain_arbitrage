@@ -576,11 +576,12 @@ def execute_trade(buy_pool, sell_pool, spread, token_address, token_info):
             # This now implicitly includes the gas cost of the sell transaction.
             profit_wei = final_amount_out_wei
             profit_base_token = (final_amount_out_wei - amount_in_wei) / (10**base_decimals)
+            profit_percent = ((final_amount_out_wei - amount_in_wei) / amount_in_wei) * 100 if amount_in_wei > 0 else 0
 
             if (final_amount_out_wei - amount_in_wei) > 0:
-                logging.info(f"  - SUCCESS! Arbitrage profitable. Profit: {profit_base_token:.6f} base tokens.")
+                logging.info(f"  - SUCCESS! Arbitrage profitable. Profit: {profit_base_token:.6f} base tokens ({profit_percent:+.2f}%).")
             else:
-                logging.warning(f"  - LOSS. Arbitrage resulted in a loss of: {abs(profit_base_token):.6f} base tokens.")
+                logging.warning(f"  - LOSS. Arbitrage resulted in a loss of: {abs(profit_base_token):.6f} base tokens ({profit_percent:+.2f}%).")
             logging.info(f"time to perform trades : {time.time() - start_trade_time}")
 
         # --- 3. POST-TRADE APPROVALS ---
