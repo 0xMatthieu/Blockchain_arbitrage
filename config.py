@@ -25,6 +25,7 @@ V3_FEE_MAP = {100: 1,    # Uniswap 0.01 %
              }
 
 # --- Blockchain Configuration ---
+BASE_CHAIN_ID = os.getenv("BASE_CHAIN_ID")
 BASE_RPC_URL = os.getenv("BASE_RPC_URL")
 PRIVATE_KEY = os.getenv("PRIVATE_KEY")
 BOT_WALLET = os.getenv("BOT_WALLET")

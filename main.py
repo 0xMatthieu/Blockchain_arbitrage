@@ -4,7 +4,7 @@ import json
 import time
 import logging
 from config import (
-    w3, account, TOKEN_ADDRESSES, BASE_CURRENCY_ADDRESS, DEX_ROUTERS,
+    w3, account, TOKEN_ADDRESSES, BASE_CHAIN_ID, BASE_CURRENCY_ADDRESS, DEX_ROUTERS,
     MIN_LIQUIDITY_USD, MIN_VOLUME_USD, MIN_SPREAD_PERCENT, POLL_INTERVAL, POLL_INTERVAL_ERROR, TRADE_COOLDOWN_SECONDS,
     TRADE_AMOUNT_BASE_TOKEN, V2_FEE_BPS, V3_FEE_MAP
 )
@@ -95,7 +95,7 @@ class ArbitrageBot:
                         volume_h24 = p.get('volume', {}).get('h24', 0)
                         if discover:
                             logging.info(
-                                f"  - DEX: {p['dexId']:<15} | Pool: {p['pairAddress']} | Pair: {p['baseToken']['symbol']}/{p['quoteToken']['symbol']} | Liq: ${liquidity_usd:12,.2f} | Vol: ${volume_h24:12,.2f}")
+                                f"  - Chain: {p['chainId']} | DEX: {p['dexId']:<15} | Pool: {p['pairAddress']} | Pair: {p['baseToken']['symbol']}/{p['quoteToken']['symbol']} | Liq: ${liquidity_usd:12,.2f} | Vol: ${volume_h24:12,.2f}")
 
                     pairs = j.get('pairs', [])
                     if not pairs:
@@ -131,7 +131,7 @@ class ArbitrageBot:
                         if (p.get('priceNative') and p.get('quoteToken') and p.get('quoteToken').get('address') and
                                 w3.to_checksum_address(p['quoteToken']['address']) == BASE_CURRENCY_ADDRESS and
                                 liquidity_usd >= MIN_LIQUIDITY_USD and
-                                volume_h24 >= MIN_VOLUME_USD):
+                                volume_h24 >= MIN_VOLUME_USD and p['chainId'] == BASE_CHAIN_ID):
                             price_native = float(p['priceNative'])
                             price_usd = float(p['priceUsd'])
                             base_currency_price_usd = price_usd / price_native if price_native > 1e-18 else 0
