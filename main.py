@@ -57,9 +57,9 @@ class ArbitrageBot:
         price_sell_lp = get_lp_price(sell_pool, token_address)
 
         if price_buy_lp is not None:
-            logging.info(f" price from api for {buy_pool['pair']} on {buy_pool['dex']} is {buy_pool['price']} while from LP {price_buy_lp}")
+            logging.info(f" buy price from api for {buy_pool['pair']} on {buy_pool['dex']} is {buy_pool['price']} while from LP {price_buy_lp}")
         if price_sell_lp is not None:
-            logging.info(f" price from api  for {sell_pool['pair']} on {sell_pool['dex']}  is {sell_pool['price']} while from LP {price_sell_lp}")
+            logging.info(f" sell price from api  for {sell_pool['pair']} on {sell_pool['dex']}  is {sell_pool['price']} while from LP {price_sell_lp}")
 
         banner = (f"{buy_pool['pair']:<20} | "
                   f"Route: {buy_dex_name.upper()} (buy, fee {buy_fee*100:.2f}%) -> "
@@ -84,7 +84,8 @@ class ArbitrageBot:
         for token_address in data:
             try:
                 api_url = f"https://api.dexscreener.com/latest/dex/tokens/{token_address}"
-                logging.info(f"Querying for token: {token_address}")
+                if discover:
+                    logging.info(f"Querying for token: {token_address}")
                 response = requests.get(api_url)
                 response.raise_for_status()
                 j = response.json()
@@ -111,7 +112,6 @@ class ArbitrageBot:
                     }
                     logging.info(
                         f"  -> Found token: {self.TOKEN_INFO[token_address]['name']} ({self.TOKEN_INFO[token_address]['symbol']})")
-                    time.sleep(POLL_INTERVAL)
 
                 else:
                     token_symbol = self.TOKEN_INFO[token_address]['symbol']
@@ -165,7 +165,7 @@ class ArbitrageBot:
                 logging.error(f"\nCould not fetch initial data for {token_address}: {e}", exc_info=True)
                 time.sleep(POLL_INTERVAL_ERROR)
 
-
+            time.sleep(POLL_INTERVAL)
 
     def run(self):
         check_dex = True
@@ -204,7 +204,6 @@ class ArbitrageBot:
         logging.info(f"Polling every {POLL_INTERVAL:.2f} seconds.")
         logging.info("-" * 50)
         last_summary_print_time = time.time()
-        last_discover_pool_time = time.time()
         
         while self.running:
             if time.time() - last_summary_print_time >= 60:

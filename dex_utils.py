@@ -1,7 +1,7 @@
 import time
 import logging
 from config import w3, account, PRIVATE_KEY, MAX_GAS_LIMIT, DEX_ROUTERS, BASE_CURRENCY_ADDRESS
-from abi import ERC20_ABI, SOLIDLY_PAIR_ABI
+from abi import ERC20_ABI, SOLIDLY_PAIR_ABI, MINIMAL_V2_PAIR_ABI
 
 def get_token_info(token_address):
     """Fetches name and symbol for a given token address."""
@@ -41,7 +41,6 @@ def find_router_info(dex_id, routers, pair_address=None):
     # If multiple matches, try to disambiguate using the pair's factory address.
     # This primarily applies to V2-style forks. V3 pools don't have a `factory()` getter.
     if pair_address:
-        MINIMAL_V2_PAIR_ABI = [{"inputs":[],"name":"factory","outputs":[{"name":"","type":"address"}],"stateMutability":"view","type":"function"}]
         try:
             pair_contract = w3.eth.contract(address=pair_address, abi=MINIMAL_V2_PAIR_ABI)
             on_chain_factory = pair_contract.functions.factory().call()

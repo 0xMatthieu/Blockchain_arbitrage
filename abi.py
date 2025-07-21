@@ -1,3 +1,15 @@
+MINIMAL_V2_PAIR_ABI = [
+    {
+        "inputs": [],
+        "name": "factory",
+        "outputs": [
+            {"name": "", "type": "address"}
+        ],
+        "stateMutability": "view",
+        "type": "function"
+    }
+]
+
 # Minimal ABI for ERC20 tokens to check balance, allowance, approve and parse Transfer events
 ERC20_ABI = [
     {
