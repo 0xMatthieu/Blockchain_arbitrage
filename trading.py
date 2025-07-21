@@ -493,6 +493,12 @@ def execute_trade(buy_pool, sell_pool, spread, token_address, token_info):
         logging.info(f"  - New balance of {token_name}: {new_target_token_balance / (10**target_decimals):.6f}")
         logging.info(f"  - Amount received: {amount_received_wei / (10**target_decimals):.6f}")
 
+        if amount_received_wei > 0:
+            executed_buy_price = (amount_in_wei / 10**base_decimals) / (amount_received_wei / 10**target_decimals)
+            theoretical_buy_price = buy_pool['price_base_token']
+            price_diff_pct = ((executed_buy_price - theoretical_buy_price) / theoretical_buy_price) * 100 if theoretical_buy_price > 0 else 0
+            logging.info(f"  - Executed buy price: {executed_buy_price:.8f} vs Theoretical: {theoretical_buy_price:.8f} ({price_diff_pct:+.2f}%)")
+
         if amount_received_wei <= 0:
             logging.error("  - CRITICAL: No tokens received from buy transaction. Aborting sell.")
             return
@@ -556,6 +562,12 @@ def execute_trade(buy_pool, sell_pool, spread, token_address, token_info):
             final_amount_out_wei = new_base_token_balance - initial_base_token_balance
             logging.info(f"  - New balance of base token: {new_base_token_balance / (10**base_decimals):.6f}")
             logging.info(f"  - Net base tokens received from sell: {final_amount_out_wei / (10**base_decimals):.6f}")
+
+            if amount_received_wei > 0 and final_amount_out_wei > 0:
+                executed_sell_price = (final_amount_out_wei / 10**base_decimals) / (amount_received_wei / 10**target_decimals)
+                theoretical_sell_price = sell_pool['price_base_token']
+                price_diff_pct = ((executed_sell_price - theoretical_sell_price) / theoretical_sell_price) * 100 if theoretical_sell_price > 0 else 0
+                logging.info(f"  - Executed sell price: {executed_sell_price:.8f} vs Theoretical: {theoretical_sell_price:.8f} ({price_diff_pct:+.2f}%)")
 
             # Profit is the final amount received from the sell, minus the initial amount spent on the buy.
             # This now implicitly includes the gas cost of the sell transaction.
