@@ -353,11 +353,13 @@ def _prepare_uniswap_v3_swap(
         router = w3.eth.contract(router_info["address"], abi=PANCAKE_V3_ROUTER_ABI)
         deadline = int(time.time()) + 300
         logging.info(f"  - Preparing Pancake V3 swap with deadline...")
-        swap_fn = router.functions.exactInputSingle(swap_params, deadline=deadline)
+        # Use keyword arguments for clarity to match the ABI definition
+        swap_fn = router.functions.exactInputSingle(params=swap_params, deadline=deadline)
     else:  # Default to Uniswap V3
         router = w3.eth.contract(router_info["address"], abi=UNISWAP_V3_ROUTER_ABI)
         logging.info(f"  - Preparing Uniswap V3 swap...")
-        swap_fn = router.functions.exactInputSingle(swap_params)
+        # Use keyword arguments for clarity to match the ABI definition
+        swap_fn = router.functions.exactInputSingle(params=swap_params)
 
     # Gas estimation checks removed by user request.
     return swap_fn, amount_out_min
