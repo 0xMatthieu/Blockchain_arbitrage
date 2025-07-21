@@ -12,7 +12,7 @@ from abi import (
     ALIENBASE_V2_ROUTER_ABI, BALANCER_V2_ROUTER_ABI, BALANCER_POOL_ABI,
     PANCAKE_V3_FACTORY_ABI, PANCAKE_V3_POOL_ABI, PANCAKE_V3_ROUTER_ABI, SWAAP_ROUTER_ABI, SWAAP_POOL_ABI
 )
-from dex_utils import find_router_info
+from dex_utils import find_router_info, check_and_approve_token
 
 def _prepare_1inch_swap(router_info: dict, amount_in_wei: int, token_in: str, token_out: str):
     """
@@ -566,6 +566,28 @@ def execute_trade(buy_pool, sell_pool, spread, token_address, token_info):
                 logging.info(f"  - SUCCESS! Arbitrage profitable. Profit: {profit_base_token:.6f} base tokens.")
             else:
                 logging.warning(f"  - LOSS. Arbitrage resulted in a loss of: {abs(profit_base_token):.6f} base tokens.")
+        
+        # --- 3. POST-TRADE APPROVALS ---
+        # Some DEXs might require re-approval after each trade.
+        # We ensure approvals are set for the next potential trade.
+        infinite_approval_amount = 2**256 - 1
+        logging.info("Step 3: Performing post-trade approval checks...")
+        
+        # Approve base currency for the buy router
+        logging.info(f"  - Checking approval for base currency on {buy_dex_name} router...")
+        check_and_approve_token(
+            token_address=BASE_CURRENCY_ADDRESS,
+            spender_address=buy_router_info['address'],
+            amount_to_approve_wei=infinite_approval_amount
+        )
+        
+        # Approve target token for the sell router
+        logging.info(f"  - Checking approval for {token_name} on {sell_dex_name} router...")
+        check_and_approve_token(
+            token_address=token_address,
+            spender_address=sell_router_info['address'],
+            amount_to_approve_wei=infinite_approval_amount
+        )
 
     except Exception as e:
         logging.error(f"An unexpected error occurred during trade execution: {e}", exc_info=True)
