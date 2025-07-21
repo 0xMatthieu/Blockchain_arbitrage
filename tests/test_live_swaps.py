@@ -171,7 +171,7 @@ def test_dex_swap_cycle(dex_name, pair_address, monkeypatch):
 
     # Create a dedicated w3 instance for the testnet and patch it into relevant modules.
     # This is more robust than manipulating environment variables at the top level.
-    test_w3 = Web3(Web3.HTTPProvider(testnet_rpc_url))
+    test_w3 = Web3(Web3.LegacyWebSocketProvider(testnet_rpc_url))
     if not test_w3.is_connected():
         pytest.fail(f"Failed to connect to testnet RPC: {testnet_rpc_url}")
 

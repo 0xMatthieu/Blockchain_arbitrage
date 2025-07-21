@@ -28,9 +28,6 @@ V3_FEE_MAP = {100: 1,    # Uniswap 0.01 %
 BASE_RPC_URL = os.getenv("BASE_RPC_URL")
 PRIVATE_KEY = os.getenv("PRIVATE_KEY")
 BOT_WALLET = os.getenv("BOT_WALLET")
-# Retry mechanism for RPC calls
-RPC_MAX_RETRIES = int(os.getenv("RPC_MAX_RETRIES", 5))
-RPC_BACKOFF_FACTOR = float(os.getenv("RPC_BACKOFF_FACTOR", 0.5))
 
 # --- Trading Configuration ---
 BASE_CURRENCY_ADDRESS_RAW = os.getenv("BASE_CURRENCY_ADDRESS")

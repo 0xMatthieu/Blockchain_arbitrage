@@ -28,7 +28,7 @@ def find_router_info(dex_id, routers):
         # 'baseswap' should match 'baseswap'.
         # 'swap' should NOT match 'baseswap'.
         key_parts = key.replace('-', '_').split('_')
-        if dex_id == key or dex_id == key_parts[0]:
+        if dex_id == key or dex_id == key_parts[0] or dex_id == info["address"].lower():
             possible_matches.append(info)
 
     if not possible_matches:
@@ -44,77 +44,75 @@ def find_router_info(dex_id, routers):
     possible_matches.sort(key=lambda x: x.get('version', 0), reverse=True)
     return possible_matches[0]
 
-def check_and_approve_token(token_address, spender_address, amount_to_approve_wei):
-    if not account or not token_address or not spender_address:
+# --- helpers ---------------------------------------------------------------
+def _gas_params(w3, bump_pct: int = 0):
+    """Return (priority, max) gas fees, optionally bumped by bump_pct%."""
+    prio = w3.eth.max_priority_fee
+    base = w3.eth.get_block('latest')['baseFeePerGas']
+    max_fee = base * 2 + prio
+    if bump_pct:
+        prio += prio * bump_pct // 100
+        max_fee += max_fee * bump_pct // 100
+    return prio, max_fee
+
+def _build_payload(w3, from_addr, nonce, bump=0):
+    prio, max_fee = _gas_params(w3, bump)
+    return {
+        "from": from_addr,
+        "nonce": nonce,
+        "maxPriorityFeePerGas": prio,
+        "maxFeePerGas": max_fee,
+        "gas": MAX_GAS_LIMIT,
+        "chainId": w3.eth.chain_id,
+    }
+
+# --- main approval routine --------------------------------------------------
+
+def check_and_approve_token(token_address: str,
+                            spender_address: str,
+                            amount_to_approve_wei: int):
+    if not all([account, token_address, spender_address]):
         return
-    
-    token_contract = w3.eth.contract(address=token_address, abi=ERC20_ABI)
-    
-    logging.info(f"Checking allowance for {spender_address} to spend {token_address}...")
-    allowance = token_contract.functions.allowance(account.address, spender_address).call()
-    
-    if allowance < amount_to_approve_wei:
-        logging.info(f"Allowance is {allowance}. Need {amount_to_approve_wei}. Approving...")
-        
-        try:
-            # --- Two-step approval for safety ---
-            # If allowance is not 0, some tokens require resetting it to 0 before setting a new value.
-            if allowance > 0:
-                logging.info("  - Current allowance is non-zero. Resetting to 0 first to avoid 'unsafe allowance' errors...")
-                
-                max_priority_fee_reset = w3.eth.max_priority_fee
-                base_fee_reset = w3.eth.get_block('latest')['baseFeePerGas']
-                max_fee_per_gas_reset = base_fee_reset * 2 + max_priority_fee_reset
 
-                reset_payload = {
-                    'from': account.address,
-                    'nonce': w3.eth.get_transaction_count(account.address),
-                    'maxFeePerGas': max_fee_per_gas_reset,
-                    'maxPriorityFeePerGas': max_priority_fee_reset,
-                    'chainId': w3.eth.chain_id
-                }
-                # Gas estimation removed by user request. Using MAX_GAS_LIMIT.
-                reset_payload['gas'] = MAX_GAS_LIMIT
-                
-                reset_txn = token_contract.functions.approve(spender_address, 0).build_transaction(reset_payload)
-                signed_reset_txn = w3.eth.account.sign_transaction(reset_txn, PRIVATE_KEY)
-                reset_tx_hash = w3.eth.send_raw_transaction(signed_reset_txn.raw_transaction)
-                
-                logging.info(f"  - Sent reset approval (to 0). Hash: {reset_tx_hash.hex()}. Waiting for confirmation...")
-                w3.eth.wait_for_transaction_receipt(reset_tx_hash)
-                logging.info("  - Allowance reset to 0 successfully.")
-                time.sleep(2) # Give the node a moment to sync state
+    token = w3.eth.contract(address=token_address, abi=ERC20_ABI)
+    allowance = token.functions.allowance(account.address,
+                                          spender_address).call()
+    logging.info(
+        f"Allowance for {spender_address} is {allowance}, desired {amount_to_approve_wei}"
+    )
 
-            # --- Approve the new amount ---
-            logging.info(f"  - Now approving the new amount: {amount_to_approve_wei}")
-            max_priority_fee = w3.eth.max_priority_fee
-            base_fee = w3.eth.get_block('latest')['baseFeePerGas']
-            max_fee_per_gas = base_fee * 2 + max_priority_fee
+    if allowance >= amount_to_approve_wei:
+        logging.info("Sufficient allowance already set.")
+        return
 
-            # Get the new nonce after the potential reset transaction
-            current_nonce = w3.eth.get_transaction_count(account.address)
+    try:
+        base_nonce = w3.eth.get_transaction_count(account.address)
+        bump = 0  # % gas bump
 
-            approve_payload = {
-                'from': account.address,
-                'nonce': current_nonce,
-                'maxFeePerGas': max_fee_per_gas,
-                'maxPriorityFeePerGas': max_priority_fee,
-                'chainId': w3.eth.chain_id
-            }
-            # Gas estimation removed by user request. Using MAX_GAS_LIMIT.
-            approve_payload['gas'] = MAX_GAS_LIMIT
-
-            approve_txn = token_contract.functions.approve(
-                spender_address, amount_to_approve_wei
-            ).build_transaction(approve_payload)
-            
-            signed_txn = w3.eth.account.sign_transaction(approve_txn, PRIVATE_KEY)
-            tx_hash = w3.eth.send_raw_transaction(signed_txn.raw_transaction)
-            
-            logging.info(f"Approval transaction sent. Hash: {tx_hash.hex()}. Waiting for confirmation...")
+        # Optional reset‑to‑zero step ---------------------------------------
+        if allowance > 0:
+            logging.info("Resetting allowance to 0 (USDT‑style safeguard)…")
+            payload = _build_payload(w3, account.address, base_nonce, bump)
+            reset_tx = token.functions.approve(spender_address, 0
+                          ).build_transaction(payload)
+            signed = w3.eth.account.sign_transaction(reset_tx, PRIVATE_KEY)
+            tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
             w3.eth.wait_for_transaction_receipt(tx_hash)
-            logging.info(f"Token {token_address} approved for spender {spender_address}.")
-        except Exception as e:
-            logging.error(f"  - Could not send approval transaction: {e}")
-    else:
-        logging.info(f"Sufficient allowance already set. Amount is {allowance}")
+            logging.info(f"Reset tx mined: {tx_hash.hex()}")
+            base_nonce += 1      # increment local nonce
+            bump += 10           # +10 % gas bump for next tx  :contentReference[oaicite:3]{index=3}
+
+        # Final approve -----------------------------------------------------
+        logging.info(f"Approving {amount_to_approve_wei}…")
+        payload = _build_payload(w3, account.address, base_nonce, bump)
+        approve_tx = token.functions.approve(spender_address,
+                                             amount_to_approve_wei
+                        ).build_transaction(payload)
+        signed = w3.eth.account.sign_transaction(approve_tx, PRIVATE_KEY)
+        tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+        w3.eth.wait_for_transaction_receipt(tx_hash)
+        logging.info(f"Approve tx mined: {tx_hash.hex()}")
+
+    except Exception as err:
+        logging.error(f"Approval flow failed: {err}")
+

@@ -165,18 +165,20 @@ UNISWAP_V3_QUOTER_ABI = [
 # Minimal ABI for a Uniswap V3 pool to parse Swap events and check slot0
 UNISWAP_V3_POOL_ABI = [
     {
-        "anonymous": False,
+        "name": "swap",
+        "type": "function",
+        "stateMutability": "nonpayable",
         "inputs": [
-            {"indexed": True, "internalType": "address", "name": "sender", "type": "address"},
-            {"indexed": True, "internalType": "address", "name": "recipient", "type": "address"},
-            {"indexed": False, "internalType": "int256", "name": "amount0", "type": "int256"},
-            {"indexed": False, "internalType": "int256", "name": "amount1", "type": "int256"},
-            {"indexed": False, "internalType": "uint160", "name": "sqrtPriceX96", "type": "uint160"},
-            {"indexed": False, "internalType": "uint128", "name": "liquidity", "type": "uint128"},
-            {"indexed": False, "internalType": "int24", "name": "tick", "type": "int24"}
+            {"internalType": "address", "name": "recipient", "type": "address"},
+            {"internalType": "bool", "name": "zeroForOne", "type": "bool"},
+            {"internalType": "int256", "name": "amountSpecified", "type": "int256"},
+            {"internalType": "uint160", "name": "sqrtPriceLimitX96", "type": "uint160"},
+            {"internalType": "bytes", "name": "data", "type": "bytes"}
         ],
-        "name": "Swap",
-        "type": "event"
+        "outputs": [
+            {"internalType": "int256", "name": "amount0", "type": "int256"},
+            {"internalType": "int256", "name": "amount1", "type": "int256"}
+        ]
     },
     {
         "inputs": [],
@@ -294,18 +296,20 @@ PANCAKE_V3_QUOTER_ABI = [
 # Minimal ABI for a Pancake V3 pool to parse Swap events and check slot0
 PANCAKE_V3_POOL_ABI = [
     {
-        "anonymous": False,
+        "name": "swap",
+        "type": "function",
+        "stateMutability": "nonpayable",
         "inputs": [
-            {"indexed": True, "internalType": "address", "name": "sender", "type": "address"},
-            {"indexed": True, "internalType": "address", "name": "recipient", "type": "address"},
-            {"indexed": False, "internalType": "int256", "name": "amount0", "type": "int256"},
-            {"indexed": False, "internalType": "int256", "name": "amount1", "type": "int256"},
-            {"indexed": False, "internalType": "uint160", "name": "sqrtPriceX96", "type": "uint160"},
-            {"indexed": False, "internalType": "uint128", "name": "liquidity", "type": "uint128"},
-            {"indexed": False, "internalType": "int24", "name": "tick", "type": "int24"}
+            {"internalType": "address", "name": "recipient", "type": "address"},
+            {"internalType": "bool", "name": "zeroForOne", "type": "bool"},
+            {"internalType": "int256", "name": "amountSpecified", "type": "int256"},
+            {"internalType": "uint160", "name": "sqrtPriceLimitX96", "type": "uint160"},
+            {"internalType": "bytes", "name": "data", "type": "bytes"}
         ],
-        "name": "Swap",
-        "type": "event"
+        "outputs": [
+            {"internalType": "int256", "name": "amount0", "type": "int256"},
+            {"internalType": "int256", "name": "amount1", "type": "int256"}
+        ]
     },
     {
         "inputs": [],

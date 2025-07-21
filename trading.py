@@ -353,7 +353,7 @@ def _prepare_uniswap_v3_swap(
         router = w3.eth.contract(router_info["address"], abi=PANCAKE_V3_ROUTER_ABI)
         deadline = int(time.time()) + 300
         logging.info(f"  - Preparing Pancake V3 swap with deadline...")
-        swap_fn = router.functions.exactInputSingle(swap_params, deadline)
+        swap_fn = router.functions.exactInputSingle(swap_params, deadline=deadline)
     else:  # Default to Uniswap V3
         router = w3.eth.contract(router_info["address"], abi=UNISWAP_V3_ROUTER_ABI)
         logging.info(f"  - Preparing Uniswap V3 swap...")
@@ -394,6 +394,7 @@ def execute_trade(buy_pool, sell_pool, spread, token_address, token_info):
     sell_dex_name = sell_pool['dex']
     buy_router_info = find_router_info(buy_dex_name, DEX_ROUTERS)
     sell_router_info = find_router_info(sell_dex_name, DEX_ROUTERS)
+    logging.warning(f"Router info for '{buy_dex_name}' and '{sell_dex_name}' returned '{buy_router_info}' and '{sell_router_info}'")
 
     if not buy_router_info or not sell_router_info:
         logging.warning(f"!!! TRADING SKIPPED: Router info for '{buy_dex_name}' or '{sell_dex_name}' not found in .env")

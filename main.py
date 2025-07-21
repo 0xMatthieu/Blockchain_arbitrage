@@ -6,7 +6,7 @@ import logging
 from config import (
     w3, account, TOKEN_ADDRESSES, BASE_CURRENCY_ADDRESS, DEX_ROUTERS,
     MIN_LIQUIDITY_USD, MIN_VOLUME_USD, MIN_SPREAD_PERCENT, POLL_INTERVAL, POLL_INTERVAL_ERROR, TRADE_COOLDOWN_SECONDS,
-    TRADE_AMOUNT_BASE_TOKEN, V2_FEE_BPS, V3_FEE_MAP, RPC_MAX_RETRIES, RPC_BACKOFF_FACTOR
+    TRADE_AMOUNT_BASE_TOKEN, V2_FEE_BPS, V3_FEE_MAP
 )
 from abi import ERC20_ABI
 from dex_utils import check_and_approve_token
@@ -23,12 +23,6 @@ class ArbitrageBot:
 
     def stop(self):
         self.running = False
-
-    def _get_dex_name_from_id(self, dex_id):
-        if dex_id in DEX_ROUTERS: return dex_id
-        if not hasattr(self, '_dex_reverse_map'):
-            self._dex_reverse_map = { v['address'].lower(): k for k, v in DEX_ROUTERS.items() if 'address' in v }
-        return self._dex_reverse_map.get(dex_id.lower(), dex_id)
 
     def _router_fee_bps(self, pool):
         if pool['dex'] in ('uniswap', 'pancakeswap'):
@@ -54,8 +48,8 @@ class ArbitrageBot:
         effective_sell = sell_pool['price'] * (1 - sell_fee)
         spread = (effective_sell - effective_buy) / effective_buy * 100
 
-        buy_dex_name = self._get_dex_name_from_id(buy_pool['dex'])
-        sell_dex_name = self._get_dex_name_from_id(sell_pool['dex'])
+        buy_dex_name = buy_pool['dex']
+        sell_dex_name = sell_pool['dex']
         banner = (f"{buy_pool['pair']:<20} | "
                   f"Route: {buy_dex_name.upper()} (buy, fee {buy_fee*100:.2f}%) -> "
                   f"{sell_dex_name.upper()} (sell, fee {sell_fee*100:.2f}%) | "
@@ -83,6 +77,12 @@ class ArbitrageBot:
                 response = requests.get(api_url)
                 response.raise_for_status()
                 j = response.json()
+
+                for p in j['pairs']:
+                    liquidity_usd = p.get('liquidity', {}).get('usd', 0)
+                    volume_h24 = p.get('volume', {}).get('h24', 0)
+                    logging.info(
+                        f"  - DEX: {p['dexId']:<15} | Pool: {p['pairAddress']} | Liq: ${liquidity_usd:12,.2f} | Vol: ${volume_h24:12,.2f}")
                 
                 pairs = j.get('pairs', [])
                 if not pairs:
