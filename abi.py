@@ -441,6 +441,19 @@ SOLIDLY_PAIR_ABI = [
         "type": "function"
     },
     {
+        "name": "prices",
+        "type": "function",
+        "stateMutability": "view",
+        "inputs": [
+          { "internalType": "address", "name": "tokenIn", "type": "address" },
+          { "internalType": "uint256", "name": "amountIn", "type": "uint256" },
+          { "internalType": "uint256", "name": "points",   "type": "uint256" }
+        ],
+        "outputs": [
+          { "internalType": "uint256[]", "name": "", "type": "uint256[]" }
+        ]
+      },
+    {
         "anonymous": False,
         "inputs": [
             {"indexed": True, "name": "sender", "type": "address"},

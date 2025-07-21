@@ -383,6 +383,7 @@ def _wait_for_balance_change(token_contract, owner_address, initial_balance, ret
 
 
 def execute_trade(buy_pool, sell_pool, spread, token_address, token_info):
+    start_trade_time = time.time()
     token_name = token_info.get('name', token_address)
     logging.info("\n" + "!"*60)
     logging.warning(f"!!! REAL TRADE TRIGGERED on {token_name} - Spread: {spread:.2f}% !!!")
@@ -580,7 +581,8 @@ def execute_trade(buy_pool, sell_pool, spread, token_address, token_info):
                 logging.info(f"  - SUCCESS! Arbitrage profitable. Profit: {profit_base_token:.6f} base tokens.")
             else:
                 logging.warning(f"  - LOSS. Arbitrage resulted in a loss of: {abs(profit_base_token):.6f} base tokens.")
-        
+            logging.info(f"time to perform trades : {time.time() - start_trade_time}")
+
         # --- 3. POST-TRADE APPROVALS ---
         # Some DEXs might require re-approval after each trade.
         # We ensure approvals are set for the next potential trade.

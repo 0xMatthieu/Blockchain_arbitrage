@@ -1,6 +1,6 @@
 import time
 import logging
-from config import w3, account, PRIVATE_KEY, MAX_GAS_LIMIT
+from config import w3, account, PRIVATE_KEY, MAX_GAS_LIMIT, DEX_ROUTERS, BASE_CURRENCY_ADDRESS
 from abi import ERC20_ABI, SOLIDLY_PAIR_ABI
 
 def get_token_info(token_address):
@@ -16,41 +16,6 @@ def get_token_info(token_address):
         logging.warning(f"  - Could not fetch name/symbol for {token_address}. Error: {str(e)[:100]}")
         symbol_fallback = f"[{token_address[-6:]}]"
         return {'symbol': symbol_fallback, 'name': token_address}
-
-
-def _get_solidly_pool_price(pool_address: str, token_in_address: str, token_out_address: str, token_in_decimals: int, token_out_decimals: int):
-    """
-    Retrieves the spot price from a Solidly-style pool using the `prices` function.
-    Returns the price of token_in in terms of token_out.
-    """
-    try:
-        pool_contract = w3.eth.contract(address=pool_address, abi=SOLIDLY_PAIR_ABI)
-
-        # We want the price of token_in, so we pass it as tokenIn.
-        # The amountIn is 1 token_in, expressed in its smallest unit (wei).
-        amount_in = 10**token_in_decimals
-
-        # The `prices` function takes tokenIn, amountIn, and points.
-        # We use 1 point to get a recent/spot price.
-        # The function returns an array of prices; we take the first value.
-        prices_out = pool_contract.functions.prices(token_in_address, amount_in, 1).call()
-
-        if not prices_out:
-            logging.warning(f"Solidly pool {pool_address} `prices` call returned no data for token {token_in_address}.")
-            return None
-
-        amount_out_wei = prices_out[0]
-
-        # The price is the amount of token_out received for 1 token_in.
-        price = (amount_out_wei / (10**token_out_decimals))
-        
-        logging.debug(f"Solidly pool {pool_address} price for {token_in_address}: {price} {token_out_address}")
-        return price
-    except Exception as e:
-        # This can happen if the contract doesn't have the `prices` function or other issues.
-        logging.warning(f"Could not get price from Solidly pool {pool_address} via `prices` function. Error: {e}")
-        return None
-
 
 def find_router_info(dex_id, routers):
     """Finds a router's info with robust matching, preferring higher versions."""
@@ -151,3 +116,73 @@ def check_and_approve_token(token_address: str,
     except Exception as err:
         logging.error(f"Approval flow failed: {err}")
 
+
+def _get_solidly_pool_price(pool_address: str, token_in_address: str, token_out_address: str, token_in_decimals: int,
+                            token_out_decimals: int):
+    """
+    Retrieves the spot price from a Solidly-style pool using the `prices` function.
+    Returns the price of token_in in terms of token_out.
+    """
+    try:
+        pool_contract = w3.eth.contract(address=pool_address, abi=SOLIDLY_PAIR_ABI)
+
+        # We want the price of token_in, so we pass it as tokenIn.
+        # The amountIn is 1 token_in, expressed in its smallest unit (wei).
+        amount_in = 10 ** token_in_decimals
+
+        # The `prices` function takes tokenIn, amountIn, and points.
+        # We use 1 point to get a recent/spot price.
+        # The function returns an array of prices; we take the first value.
+        prices_out = pool_contract.functions.prices(token_in_address, amount_in, 1).call()
+
+        if not prices_out:
+            logging.warning(f"Solidly pool {pool_address} `prices` call returned no data for token {token_in_address}.")
+            return None
+
+        amount_out_wei = prices_out[0]
+
+        # The price is the amount of token_out received for 1 token_in.
+        price = (amount_out_wei / (10 ** token_out_decimals))
+
+        logging.debug(f"Solidly pool {pool_address} price for {token_in_address}: {price} {token_out_address}")
+        return price
+    except Exception as e:
+        # This can happen if the contract doesn't have the `prices` function or other issues.
+        logging.warning(f"Could not get price from Solidly pool {pool_address} via `prices` function. Error: {e}")
+        return None
+
+def get_lp_price(pool, token_address):
+    dex_name = pool['dex']
+    router_info = find_router_info(dex_name, DEX_ROUTERS)
+    router_type = router_info.get('type', 'uniswap_v2')
+
+
+    # shall be done in a dedicated function called at startup, will not change
+    base_token_contract = w3.eth.contract(address=BASE_CURRENCY_ADDRESS, abi=ERC20_ABI)
+    base_decimals = base_token_contract.functions.decimals().call()
+
+    quote_token_contract = w3.eth.contract(address=token_address, abi=ERC20_ABI)
+    quote_decimals = quote_token_contract.functions.decimals().call()
+
+    price = None
+    if router_type == '1inch':
+        price = None
+    elif router_type == 'alienbase':
+        price = None
+    elif router_info['version'] == 2:
+        if router_type == 'solidly':
+            price = _get_solidly_pool_price(pool['pairAddress'], token_address, BASE_CURRENCY_ADDRESS, quote_decimals,
+                            base_decimals)
+        elif router_type == 'balancer_v2':
+            price = None
+        elif router_type == 'swaap_v2':
+            price = None
+        else:  # Default to uniswapv2
+            price = None
+    elif router_info['version'] == 3:
+        price = None
+    else:
+        raise NotImplementedError(
+            f"DEX version {router_info['version']} or type '{router_type}' is not supported for buys.")
+
+    return price
