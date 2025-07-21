@@ -395,8 +395,8 @@ def execute_trade(buy_pool, sell_pool, spread, token_address, token_info):
 
     buy_dex_name = buy_pool['dex']
     sell_dex_name = sell_pool['dex']
-    buy_router_info = find_router_info(buy_dex_name, DEX_ROUTERS)
-    sell_router_info = find_router_info(sell_dex_name, DEX_ROUTERS)
+    buy_router_info = find_router_info(buy_dex_name, DEX_ROUTERS, pair_address=buy_pool.get('pairAddress'))
+    sell_router_info = find_router_info(sell_dex_name, DEX_ROUTERS, pair_address=sell_pool.get('pairAddress'))
     logging.warning(f"Router info for '{buy_dex_name}' and '{sell_dex_name}' returned '{buy_router_info}' and '{sell_router_info}'")
 
     if not buy_router_info or not sell_router_info:

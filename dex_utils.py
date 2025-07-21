@@ -17,10 +17,10 @@ def get_token_info(token_address):
         symbol_fallback = f"[{token_address[-6:]}]"
         return {'symbol': symbol_fallback, 'name': token_address}
 
-def find_router_info(dex_id, routers):
-    """Finds a router's info with robust matching, preferring higher versions."""
+def find_router_info(dex_id, routers, pair_address=None):
+    """Finds a router's info with robust matching, using factory for disambiguation."""
     dex_id = dex_id.lower().strip().replace('-', '_')
-    
+
     possible_matches = []
     for key, info in routers.items():
         # A key matches if it is the dex_id, or if its first part (split by _) matches the dex_id.
@@ -38,9 +38,26 @@ def find_router_info(dex_id, routers):
     if len(possible_matches) == 1:
         return possible_matches[0]
 
-    # If multiple matches are found (e.g., uniswap_v2 and uniswap_v3 for 'uniswap'),
-    # prefer the one with the highest version number.
-    logging.debug(f"Found multiple possible routers for '{dex_id}'. Selecting highest version.")
+    # If multiple matches, try to disambiguate using the pair's factory address.
+    # This primarily applies to V2-style forks. V3 pools don't have a `factory()` getter.
+    if pair_address:
+        MINIMAL_V2_PAIR_ABI = [{"inputs":[],"name":"factory","outputs":[{"name":"","type":"address"}],"stateMutability":"view","type":"function"}]
+        try:
+            pair_contract = w3.eth.contract(address=pair_address, abi=MINIMAL_V2_PAIR_ABI)
+            on_chain_factory = pair_contract.functions.factory().call()
+            logging.info(f"Disambiguating router for '{dex_id}': Pair {pair_address} has factory {on_chain_factory}")
+
+            for info in possible_matches:
+                if 'factory' in info and info['factory'] == on_chain_factory:
+                    logging.info(f"  - Matched router with factory address {on_chain_factory}.")
+                    return info
+            logging.warning(f"  - Could not find a router with factory {on_chain_factory} among candidates.")
+        except Exception as e:
+            # This can fail if it's not a V2-style pair, or for other reasons.
+            logging.debug(f"Could not query factory for pair {pair_address} to disambiguate router: {e}")
+
+    # Fallback: prefer the one with the highest version number.
+    logging.debug(f"Found multiple possible routers for '{dex_id}'. Selecting highest version as fallback.")
     possible_matches.sort(key=lambda x: x.get('version', 0), reverse=True)
     return possible_matches[0]
 
@@ -153,7 +170,7 @@ def _get_solidly_pool_price(pool_address: str, token_in_address: str, token_out_
 
 def get_lp_price(pool, token_address):
     dex_name = pool['dex']
-    router_info = find_router_info(dex_name, DEX_ROUTERS)
+    router_info = find_router_info(dex_name, DEX_ROUTERS, pair_address=pool.get('pairAddress'))
     router_type = router_info.get('type', 'uniswap_v2')
 
 
