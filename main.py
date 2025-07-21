@@ -149,7 +149,7 @@ class ArbitrageBot:
                         self.analyze_and_trade(valid_pairs, token_address)
                     else:
                         # This handles the case where pairs are returned, but none meet the liquidity/volume criteria.
-                        logging.info(f"[{token_symbol}] No pairs found meeting liquidity/volume criteria.")
+                        self.latest_spread_info[token_address] = f"[{token_symbol}] No pairs found meeting liquidity/volume criteria."
 
 
             except requests.exceptions.HTTPError as http_err:
