@@ -70,7 +70,7 @@ class ArbitrageBot:
         if account: logging.info(f"Bot wallet address: {account.address}")
         
         logging.info("--- Discovering pools and fetching initial token info via DexScreener ---")
-        for token_address in TOKEN_ADDRESSES:
+        for token_address in TOKEN_ADDRESSES.values():
             try:
                 api_url = f"https://api.dexscreener.com/latest/dex/tokens/{token_address}"
                 logging.info(f"Querying for token: {token_address}")

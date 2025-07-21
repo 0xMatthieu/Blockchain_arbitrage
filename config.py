@@ -65,7 +65,14 @@ else:
     )
 
 # --- Address Checksumming ---
-TOKEN_ADDRESSES = [w3.to_checksum_address(addr.strip()) for addr in TOKEN_ADDRESSES_RAW.split(',') if addr.strip()] if TOKEN_ADDRESSES_RAW else []
+TOKEN_ADDRESSES = {}
+if TOKEN_ADDRESSES_RAW:
+    for pair in TOKEN_ADDRESSES_RAW.split(','):
+        if ':' in pair:
+            name, addr = pair.split(':', 1)
+            if name.strip() and addr.strip():
+                TOKEN_ADDRESSES[name.strip()] = w3.to_checksum_address(addr.strip())
+
 BASE_CURRENCY_ADDRESS = w3.to_checksum_address(BASE_CURRENCY_ADDRESS_RAW) if BASE_CURRENCY_ADDRESS_RAW else None
 
 DEX_ROUTERS = {}
