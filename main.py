@@ -213,7 +213,7 @@ class ArbitrageBot:
                         logging.info(self.latest_spread_info.get(token_addr, f"Waiting for data on {self.TOKEN_INFO[token_addr]['symbol']}..."))
                 else: logging.info("No spread data yet. Waiting for polls...")
                 logging.info("-" * 50)
-                last_summary_print_time = time.time() - 60
+                last_summary_print_time = time.time()
 
             # --- Main Polling Logic ---
             self.poll_dexscreener_api()
