@@ -497,7 +497,7 @@ def execute_trade(buy_pool, sell_pool, spread, token_address, token_info):
 
         if amount_received_wei > 0:
             executed_buy_price = (amount_in_wei / 10**base_decimals) / (amount_received_wei / 10**target_decimals)
-            theoretical_buy_price = buy_pool['price_base_token']
+            theoretical_buy_price = buy_pool['price']
             price_diff_pct = ((executed_buy_price - theoretical_buy_price) / theoretical_buy_price) * 100 if theoretical_buy_price > 0 else 0
             logging.info(f"  - Executed buy price: {executed_buy_price:.8f} vs Theoretical: {theoretical_buy_price:.8f} ({price_diff_pct:+.2f}%)")
 
@@ -567,7 +567,7 @@ def execute_trade(buy_pool, sell_pool, spread, token_address, token_info):
 
             if amount_received_wei > 0 and final_amount_out_wei > 0:
                 executed_sell_price = (final_amount_out_wei / 10**base_decimals) / (amount_received_wei / 10**target_decimals)
-                theoretical_sell_price = sell_pool['price_base_token']
+                theoretical_sell_price = sell_pool['price']
                 price_diff_pct = ((executed_sell_price - theoretical_sell_price) / theoretical_sell_price) * 100 if theoretical_sell_price > 0 else 0
                 logging.info(f"  - Executed sell price: {executed_sell_price:.8f} vs Theoretical: {theoretical_sell_price:.8f} ({price_diff_pct:+.2f}%)")
 
