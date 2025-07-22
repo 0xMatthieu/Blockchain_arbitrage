@@ -222,6 +222,20 @@ UNISWAP_V3_POOL_ABI = [
         "stateMutability": "view",
         "inputs": [],
         "outputs": [{"name": "", "type": "uint24"}]
+    },
+    {
+        "name": "token0",
+        "type": "function",
+        "stateMutability": "view",
+        "inputs": [],
+        "outputs": [{"name": "", "type": "address"}]
+    },
+    {
+        "name": "token1",
+        "type": "function",
+        "stateMutability": "view",
+        "inputs": [],
+        "outputs": [{"name": "", "type": "address"}]
     }
 ]
 
@@ -353,6 +367,20 @@ PANCAKE_V3_POOL_ABI = [
         "stateMutability": "view",
         "inputs": [],
         "outputs": [{"name": "", "type": "uint24"}]
+    },
+    {
+        "name": "token0",
+        "type": "function",
+        "stateMutability": "view",
+        "inputs": [],
+        "outputs": [{"name": "", "type": "address"}]
+    },
+    {
+        "name": "token1",
+        "type": "function",
+        "stateMutability": "view",
+        "inputs": [],
+        "outputs": [{"name": "", "type": "address"}]
     }
 ]
 

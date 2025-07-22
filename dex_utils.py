@@ -2,7 +2,7 @@ import time
 import logging
 from config import (w3, account, PRIVATE_KEY, MAX_GAS_LIMIT, DEX_ROUTERS, BASE_CURRENCY_ADDRESS,
                     TRADE_AMOUNT_BASE_TOKEN)
-from abi import ERC20_ABI, SOLIDLY_PAIR_ABI, MINIMAL_V2_PAIR_ABI
+from abi import ERC20_ABI, SOLIDLY_PAIR_ABI, MINIMAL_V2_PAIR_ABI, UNISWAP_V3_POOL_ABI, PANCAKE_V3_POOL_ABI
 
 def get_token_info(token_address):
     """Fetches name and symbol for a given token address."""
@@ -164,6 +164,60 @@ def _get_solidly_pool_price(pool_address: str, token_in_address: str, token_out_
     except Exception as e:
         # This can happen if the contract doesn't have the `prices` function or other issues.
         logging.warning(f"Could not get price from Solidly pool {pool_address} via `prices` function. Error: {e}")
+        return None
+
+
+def _get_uniswap_or_pancakeswap_pool_price(pool_address: str, router_type: str, token_in_address: str, token_out_address: str, token_in_decimals: int, token_out_decimals: int):
+    """
+    Retrieves the spot price from a Uniswap/Pancake V3 pool using `slot0`.
+    Returns the price of token_in in terms of token_out.
+    """
+    try:
+        if router_type == 'pancakeswap_v3':
+            pool_abi = PANCAKE_V3_POOL_ABI
+        else: # Default to Uniswap V3
+            pool_abi = UNISWAP_V3_POOL_ABI
+        
+        pool_contract = w3.eth.contract(address=pool_address, abi=pool_abi)
+        sqrt_price_x96, *_ = pool_contract.functions.slot0().call()
+
+        if sqrt_price_x96 == 0:
+            logging.warning(f"V3 pool {pool_address} slot0.sqrtPriceX96 is 0. Pool may not be initialized.")
+            return None
+        
+        # The price from slot0 is for token0 in terms of token1.
+        price_raw_t0_t1 = (sqrt_price_x96 / 2**96) ** 2
+
+        pool_token0_addr = w3.to_checksum_address(pool_contract.functions.token0().call())
+        token_in_address = w3.to_checksum_address(token_in_address)
+
+        # Determine which token is token0 and which is token1 to apply decimals correctly
+        if pool_token0_addr == token_in_address:
+            decimals_t0 = token_in_decimals
+            decimals_t1 = token_out_decimals
+        else:
+            decimals_t0 = token_out_decimals
+            decimals_t1 = token_in_decimals
+        
+        # Adjust price for decimals. This gives the price of token0 in terms of token1.
+        price_t0_t1_adj = price_raw_t0_t1 * (10**decimals_t0) / (10**decimals_t1)
+        
+        # We need to return price of token_in in terms of token_out
+        if pool_token0_addr == token_in_address:
+            # token_in is T0. We need price(T0/T1), which is what we have.
+            price = price_t0_t1_adj
+        else:
+            # token_in is T1. We need price(T1/T0), so we invert price(T0/T1).
+            if price_t0_t1_adj == 0:
+                logging.warning(f"Calculated V3 price for pool {pool_address} is zero, cannot invert.")
+                return None
+            price = 1 / price_t0_t1_adj
+        
+        logging.debug(f"Uniswap/Pancake V3 pool {pool_address} price for {token_in_address}: {price} {token_out_address}")
+        return price
+
+    except Exception as e:
+        logging.warning(f"Could not get price from V3 pool {pool_address} via `slot0`. Error: {e}")
         return None
 
 def get_lp_price(pool, token_address):
