@@ -1,6 +1,7 @@
 import time
 import logging
-from config import w3, account, PRIVATE_KEY, MAX_GAS_LIMIT, DEX_ROUTERS, BASE_CURRENCY_ADDRESS
+from config import (w3, account, PRIVATE_KEY, MAX_GAS_LIMIT, DEX_ROUTERS, BASE_CURRENCY_ADDRESS,
+                    TRADE_AMOUNT_BASE_TOKEN)
 from abi import ERC20_ABI, SOLIDLY_PAIR_ABI, MINIMAL_V2_PAIR_ABI
 
 def get_token_info(token_address):
@@ -44,11 +45,9 @@ def find_router_info(dex_id, routers, pair_address=None):
         try:
             pair_contract = w3.eth.contract(address=pair_address, abi=MINIMAL_V2_PAIR_ABI)
             on_chain_factory = pair_contract.functions.factory().call()
-            logging.info(f"Disambiguating router for '{dex_id}': Pair {pair_address} has factory {on_chain_factory}")
 
             for info in possible_matches:
                 if 'factory' in info and info['factory'] == on_chain_factory:
-                    logging.info(f"  - Matched router with factory address {on_chain_factory}.")
                     return info
             logging.warning(f"  - Could not find a router with factory {on_chain_factory} among candidates.")
         except Exception as e:
@@ -144,7 +143,7 @@ def _get_solidly_pool_price(pool_address: str, token_in_address: str, token_out_
 
         # We want the price of token_in, so we pass it as tokenIn.
         # The amountIn is 1 token_in, expressed in its smallest unit (wei).
-        amount_in = 10 ** token_in_decimals
+        amount_in = int(TRADE_AMOUNT_BASE_TOKEN * (10 ** token_in_decimals))
 
         # The `prices` function takes tokenIn, amountIn, and points.
         # We use 1 point to get a recent/spot price.

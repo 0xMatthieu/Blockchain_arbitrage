@@ -34,7 +34,7 @@ class ArbitrageBot:
     def analyze_and_trade(self, pairs, token_address):
         if time.time() - self.last_trade_attempt_ts < TRADE_COOLDOWN_SECONDS:
             return
-        if len(pairs) < 2:
+        if len(pairs) < 2 or pairs is None:
             token_symbol = self.TOKEN_INFO.get(token_address, {}).get('symbol', f"[{token_address[-6:]}]")
             pair_symbol = pairs[0]['pair'] if pairs else token_symbol
             self.latest_spread_info[token_address] = f"{pair_symbol:<20} | Not enough valid pools to analyze."
