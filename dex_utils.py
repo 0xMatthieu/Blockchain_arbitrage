@@ -249,7 +249,8 @@ def get_lp_price(pool, token_address):
         else:  # Default to uniswapv2
             price = None
     elif router_info['version'] == 3:
-        price = None
+        price = _get_uniswap_or_pancakeswap_pool_price(pool['pairAddress'], router_type, token_address, BASE_CURRENCY_ADDRESS, quote_decimals,
+                            base_decimals)
     else:
         raise NotImplementedError(
             f"DEX version {router_info['version']} or type '{router_type}' is not supported for buys.")
