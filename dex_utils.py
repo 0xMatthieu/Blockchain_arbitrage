@@ -1,7 +1,7 @@
 import time
 import logging
 from config import (w3, account, PRIVATE_KEY, MAX_GAS_LIMIT, DEX_ROUTERS, BASE_CURRENCY_ADDRESS,
-                    TRADE_AMOUNT_BASE_TOKEN, TX_RECEIPT_TIMEOUT)
+                    TRADE_AMOUNT_BASE_TOKEN, TX_RECEIPT_TIMEOUT, MAX_PRICE_IMPACT_PCT)
 from abi import (ERC20_ABI, SOLIDLY_PAIR_ABI, MINIMAL_V2_PAIR_ABI, UNISWAP_V3_POOL_ABI,
                  PANCAKE_V3_POOL_ABI, V2_FACTORY_ABI, SOLIDLY_FACTORY_ABI,
                  UNISWAP_V3_FACTORY_ABI, PANCAKE_V3_FACTORY_ABI)
@@ -408,3 +408,57 @@ def _discover_v3(pools, dex_key, router_info, factory_addr, token_address, base_
             'base_currency_price_usd': 0,
         })
         logging.info(f"  - {dex_key}: found V3 pool {pool_addr} at {fee} bps (liquidity: {liquidity})")
+
+
+# --- Dynamic trade sizing -------------------------------------------------
+
+def calc_max_trade_size(pool, token_address):
+    """
+    Calculate max trade size (in base token wei) to keep price impact under MAX_PRICE_IMPACT_PCT.
+    For V2: impact ≈ amountIn / reserve_in → amountIn = reserve_in * max_impact / (1 - max_impact)
+    For V3: use liquidity as a rough proxy.
+    Returns amount in wei, or None if cannot determine.
+    """
+    router_info = find_router_info(pool['dex'], DEX_ROUTERS, pair_address=pool.get('pairAddress'))
+    if not router_info:
+        return None
+
+    router_type = router_info.get('type', 'uniswap_v2')
+    max_impact = MAX_PRICE_IMPACT_PCT / 100.0
+
+    try:
+        if router_type in ('1inch', 'balancer_v2', 'swaap_v2'):
+            return None
+
+        if router_info['version'] == 2 or router_type == 'solidly':
+            # V2/Solidly: use reserves
+            if router_type == 'solidly':
+                pair = w3.eth.contract(address=pool['pairAddress'], abi=SOLIDLY_PAIR_ABI)
+            else:
+                pair = w3.eth.contract(address=pool['pairAddress'], abi=MINIMAL_V2_PAIR_ABI)
+
+            r0, r1, _ = pair.functions.getReserves().call()
+            token0 = w3.to_checksum_address(pair.functions.token0().call())
+            base_addr = w3.to_checksum_address(BASE_CURRENCY_ADDRESS)
+
+            # We want reserve of base token (what we're spending)
+            reserve_base = r0 if token0 == base_addr else r1
+
+            if reserve_base == 0:
+                return None
+
+            # amountIn for target impact: reserve * impact / (1 - impact)
+            max_amount = int(reserve_base * max_impact / (1 - max_impact))
+            return max_amount
+
+        elif router_info['version'] == 3:
+            # V3: rough heuristic — use a fraction of TVL approximated from price * liquidity
+            # This is less precise than V2 but provides a reasonable cap
+            base_decimals = get_decimals(BASE_CURRENCY_ADDRESS)
+            # For V3, limit to max_impact % of what slot0 + liquidity implies
+            # A proper calculation would need tick math; use a conservative cap
+            return int(TRADE_AMOUNT_BASE_TOKEN * (10 ** base_decimals))  # fallback to configured amount
+
+    except Exception as e:
+        logging.debug(f"Could not calculate max trade size for {pool['pairAddress']}: {e}")
+        return None

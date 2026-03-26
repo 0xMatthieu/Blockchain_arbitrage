@@ -3,11 +3,13 @@ import logging
 from config import (
     w3, account, TOKEN_ADDRESSES, BASE_CHAIN_ID, BASE_CURRENCY_ADDRESS, DEX_ROUTERS,
     MIN_SPREAD_PERCENT, TRADE_COOLDOWN_SECONDS,
-    TRADE_AMOUNT_BASE_TOKEN, V2_FEE_BPS, V3_FEE_MAP, ON_CHAIN_POLL_INTERVAL
+    TRADE_AMOUNT_BASE_TOKEN, V2_FEE_BPS, V3_FEE_MAP, ON_CHAIN_POLL_INTERVAL,
+    ARB_CONTRACT_ADDRESS
 )
 from abi import ERC20_ABI
-from dex_utils import get_lp_price, check_and_approve_token, get_decimals, discover_pools, get_token_info
-from trading import execute_trade
+from dex_utils import (get_lp_price, check_and_approve_token, get_decimals,
+                       discover_pools, get_token_info, calc_max_trade_size)
+from trading import execute_trade_atomic, execute_trade
 from logging_config import setup_logging
 
 
@@ -60,7 +62,23 @@ class ArbitrageBot:
             logging.info(
                 f"  -> Trade opportunity: {token_info.get('name', token_address)}. Spread {spread:.2f}%. "
                 f"Buy {buy_pool['price']:.8f} / {effective_buy:.8f}. Sell {sell_pool['price']:.8f} / {effective_sell:.8f}.")
-            execute_trade(buy_pool, sell_pool, spread, token_address, token_info)
+
+            # Dynamic trade sizing: use min of both pools' max safe size
+            base_decimals = get_decimals(BASE_CURRENCY_ADDRESS)
+            default_amount = int(TRADE_AMOUNT_BASE_TOKEN * (10 ** base_decimals))
+            buy_max = calc_max_trade_size(buy_pool, token_address)
+            sell_max = calc_max_trade_size(sell_pool, token_address)
+            candidates = [default_amount]
+            if buy_max is not None and buy_max > 0:
+                candidates.append(buy_max)
+            if sell_max is not None and sell_max > 0:
+                candidates.append(sell_max)
+            trade_amount_wei = min(candidates)
+
+            if trade_amount_wei < default_amount:
+                logging.info(f"  -> Dynamic sizing: {trade_amount_wei / (10**base_decimals):.6f} (capped by pool reserves)")
+
+            execute_trade_atomic(buy_pool, sell_pool, spread, token_address, token_info, amount_in_wei=trade_amount_wei)
             self.last_trade_attempt_ts = time.time()
 
     def discover_all_pools(self):
@@ -115,19 +133,23 @@ class ArbitrageBot:
         logging.info("-" * 50)
 
         # --- Phase 2: Approvals ---
-        logging.info("--- Running Initial Approval Checks ---")
-        base_decimals = get_decimals(BASE_CURRENCY_ADDRESS)
-        amount_to_approve_wei = int(TRADE_AMOUNT_BASE_TOKEN * (10**base_decimals))
-        unlimited_allowance = 2**256 - 1
-        for dex, info in DEX_ROUTERS.items():
-            logging.info(f"\nChecking approvals for {dex.upper()} router ({info['address']})...")
-            check_and_approve_token(BASE_CURRENCY_ADDRESS, info['address'], amount_to_approve_wei)
-            for token_address in self.TOKEN_INFO:
-                token_name = self.TOKEN_INFO[token_address]['name']
-                logging.info(f"  - Approving target token: {token_name} ({token_address})")
-                check_and_approve_token(token_address, info['address'], unlimited_allowance)
-            time.sleep(1)
-        logging.info("--- Initial Approval Checks Complete ---\n")
+        if ARB_CONTRACT_ADDRESS:
+            logging.info(f"--- Using Atomic Contract at {ARB_CONTRACT_ADDRESS} ---")
+            logging.info("Contract manages its own approvals (run 'python deploy.py approve' if needed).")
+        else:
+            logging.info("--- Running Initial EOA Approval Checks (no contract configured) ---")
+            base_decimals = get_decimals(BASE_CURRENCY_ADDRESS)
+            amount_to_approve_wei = int(TRADE_AMOUNT_BASE_TOKEN * (10**base_decimals))
+            unlimited_allowance = 2**256 - 1
+            for dex, info in DEX_ROUTERS.items():
+                logging.info(f"\nChecking approvals for {dex.upper()} router ({info['address']})...")
+                check_and_approve_token(BASE_CURRENCY_ADDRESS, info['address'], amount_to_approve_wei)
+                for token_address in self.TOKEN_INFO:
+                    token_name = self.TOKEN_INFO[token_address]['name']
+                    logging.info(f"  - Approving target token: {token_name} ({token_address})")
+                    check_and_approve_token(token_address, info['address'], unlimited_allowance)
+                time.sleep(1)
+            logging.info("--- Initial Approval Checks Complete ---\n")
 
         # --- Phase 3: On-chain price polling ---
         logging.info("Starting on-chain price polling for arbitrage analysis...")

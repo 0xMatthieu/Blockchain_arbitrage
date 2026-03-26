@@ -1,12 +1,14 @@
 import time
 import logging
+from eth_abi import encode
 from web3.logs import DISCARD
 from config import (
     w3, account, PRIVATE_KEY, MAX_GAS_LIMIT, DEX_ROUTERS,
     BASE_CURRENCY_ADDRESS, TRADE_AMOUNT_BASE_TOKEN,
     SLIPPAGE_TOLERANCE_PERCENT, DEADLINE_OFFSET,
     LIQUIDITY_IMPACT_THRESHOLD, BALANCE_CHECK_RETRIES,
-    BALANCE_CHECK_DELAY, TX_RECEIPT_TIMEOUT
+    BALANCE_CHECK_DELAY, TX_RECEIPT_TIMEOUT,
+    ARB_CONTRACT_ADDRESS, ARB_CONTRACT_ABI
 )
 from abi import (
     ERC20_ABI, UNISWAP_V2_ROUTER_ABI, UNISWAP_V3_ROUTER_ABI, SOLIDLY_ROUTER_ABI,
@@ -16,6 +18,14 @@ from abi import (
     PANCAKE_V3_FACTORY_ABI, PANCAKE_V3_POOL_ABI, PANCAKE_V3_ROUTER_ABI, SWAAP_ROUTER_ABI, SWAAP_POOL_ABI
 )
 from dex_utils import find_router_info, check_and_approve_token, get_decimals
+
+# --- DEX type constants (must match ArbitrageExecutor.sol) ---
+DEX_V2 = 0
+DEX_V3 = 1
+DEX_SOLIDLY = 2
+
+# Cache of tokens that failed simulation (likely honeypots)
+_failed_tokens = set()
 
 
 def _prepare_1inch_swap(router_info: dict, amount_in_wei: int, token_in: str, token_out: str,
@@ -410,6 +420,146 @@ def _build_swap(router_type, version, dex_name, router_info, amount_in_wei,
                                          min_amount_out_wei=min_out)
     else:
         raise NotImplementedError(f"DEX version {version} or type '{router_type}' is not supported.")
+
+
+# --- Atomic Arbitrage via Smart Contract ---
+
+def _get_dex_type(router_info):
+    """Map router info to contract DEX type constant."""
+    router_type = router_info.get('type', 'uniswap_v2')
+    version = router_info.get('version', 2)
+
+    if router_type == 'solidly':
+        return DEX_SOLIDLY
+    elif version == 3:
+        return DEX_V3
+    else:
+        return DEX_V2
+
+
+def _encode_swap_data(dex_type, router_info, pool, min_amount_out=0):
+    """Encode per-DEX swap parameters for the contract."""
+    if dex_type == DEX_V2:
+        return encode(['uint256'], [min_amount_out])
+    elif dex_type == DEX_V3:
+        fee = pool.get('feeBps', 3000)
+        return encode(['uint24', 'uint256'], [fee, min_amount_out])
+    elif dex_type == DEX_SOLIDLY:
+        factory = router_info.get('factory', '0x' + '00' * 20)
+        stable = False  # assume volatile
+        return encode(['bool', 'address', 'uint256'], [stable, factory, min_amount_out])
+    else:
+        raise ValueError(f"Unknown dex type: {dex_type}")
+
+
+def execute_trade_atomic(buy_pool, sell_pool, spread, token_address, token_info, amount_in_wei=None):
+    """
+    Execute arbitrage atomically via the ArbitrageExecutor contract.
+    Uses eth_call to simulate first (free), only sends real tx if profitable.
+    """
+    if not ARB_CONTRACT_ADDRESS or not ARB_CONTRACT_ABI:
+        logging.warning("Atomic contract not configured, falling back to EOA trading.")
+        return execute_trade(buy_pool, sell_pool, spread, token_address, token_info)
+
+    # Skip tokens that have previously failed simulation (likely honeypots)
+    if token_address in _failed_tokens:
+        logging.debug(f"Skipping {token_address} — previously failed simulation.")
+        return
+
+    token_name = token_info.get('name', token_address)
+    start_time = time.time()
+
+    buy_dex_name = buy_pool['dex']
+    sell_dex_name = sell_pool['dex']
+    buy_router_info = find_router_info(buy_dex_name, DEX_ROUTERS, pair_address=buy_pool.get('pairAddress'))
+    sell_router_info = find_router_info(sell_dex_name, DEX_ROUTERS, pair_address=sell_pool.get('pairAddress'))
+
+    if not buy_router_info or not sell_router_info:
+        logging.warning(f"Router info not found for {buy_dex_name} or {sell_dex_name}")
+        return
+
+    # Check if both DEX types are supported by the contract
+    buy_type = _get_dex_type(buy_router_info)
+    sell_type = _get_dex_type(sell_router_info)
+
+    try:
+        arb_contract = w3.eth.contract(address=ARB_CONTRACT_ADDRESS, abi=ARB_CONTRACT_ABI)
+        base_decimals = get_decimals(BASE_CURRENCY_ADDRESS)
+
+        if amount_in_wei is None:
+            amount_in_wei = int(TRADE_AMOUNT_BASE_TOKEN * (10 ** base_decimals))
+
+        # Encode swap data for buy and sell
+        buy_data = _encode_swap_data(buy_type, buy_router_info, buy_pool)
+        sell_data = _encode_swap_data(sell_type, sell_router_info, sell_pool)
+
+        min_profit = 1  # 1 wei — just needs to be profitable
+
+        # Build the function call (struct-based to avoid stack-too-deep)
+        arb_params = (
+            buy_type,
+            buy_router_info['address'],
+            buy_data,
+            sell_type,
+            sell_router_info['address'],
+            sell_data,
+            BASE_CURRENCY_ADDRESS,
+            token_address,
+            amount_in_wei,
+            min_profit
+        )
+        arb_call = arb_contract.functions.executeArb(arb_params)
+
+        # --- SIMULATION: eth_call (free, no gas) ---
+        try:
+            arb_call.call({'from': account.address})
+        except Exception as sim_err:
+            err_msg = str(sim_err)
+            if "not profitable" in err_msg:
+                logging.info(f"  Simulation: not profitable for {token_name} on {buy_dex_name}->{sell_dex_name}. Skipping.")
+            elif "buy returned 0" in err_msg:
+                logging.warning(f"  Simulation: buy returned 0 for {token_name}. Possible honeypot. Caching skip.")
+                _failed_tokens.add(token_address)
+            else:
+                logging.info(f"  Simulation reverted for {token_name}: {err_msg[:150]}")
+                # If it consistently fails, cache it
+                _failed_tokens.add(token_address)
+            return
+
+        logging.info(f"  Simulation PASSED for {token_name}! Spread: {spread:.2f}%. Executing real tx...")
+        logging.warning(f"!!! ATOMIC TRADE: {token_name} | {buy_dex_name} -> {sell_dex_name} | Spread: {spread:.2f}% !!!")
+
+        # --- REAL EXECUTION ---
+        max_priority_fee = w3.eth.max_priority_fee
+        base_fee = w3.eth.get_block('latest')['baseFeePerGas']
+        max_fee = base_fee * 2 + max_priority_fee
+        nonce = w3.eth.get_transaction_count(account.address)
+
+        tx = arb_call.build_transaction({
+            'from': account.address,
+            'nonce': nonce,
+            'maxFeePerGas': max_fee,
+            'maxPriorityFeePerGas': max_priority_fee,
+            'gas': MAX_GAS_LIMIT,
+            'chainId': w3.eth.chain_id,
+        })
+
+        signed = w3.eth.account.sign_transaction(tx, PRIVATE_KEY)
+        tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
+        logging.info(f"  Tx sent: {tx_hash.hex()}")
+
+        receipt = w3.eth.wait_for_transaction_receipt(tx_hash, timeout=TX_RECEIPT_TIMEOUT)
+
+        gas_cost_wei = receipt['gasUsed'] * receipt['effectiveGasPrice']
+        gas_cost_eth = gas_cost_wei / (10 ** 18)
+
+        if receipt['status'] == 1:
+            logging.info(f"  SUCCESS! Atomic arb completed. Gas: {gas_cost_eth:.8f} ETH. Time: {time.time() - start_time:.2f}s")
+        else:
+            logging.warning(f"  Tx reverted on-chain (state changed between simulation and execution). Gas lost: {gas_cost_eth:.8f} ETH")
+
+    except Exception as e:
+        logging.error(f"Atomic trade error: {e}", exc_info=True)
 
 
 def execute_trade(buy_pool, sell_pool, spread, token_address, token_info):

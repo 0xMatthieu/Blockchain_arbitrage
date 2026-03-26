@@ -97,3 +97,17 @@ for dex, info in DEX_ROUTERS_RAW.items():
 
 # --- Account Setup ---
 account = w3.eth.account.from_key(PRIVATE_KEY) if PRIVATE_KEY and PRIVATE_KEY != "0xyour_private_key_here" else None
+
+# --- Arbitrage Contract ---
+ARB_CONTRACT_ADDRESS_RAW = os.getenv("ARB_CONTRACT_ADDRESS")
+ARB_CONTRACT_ADDRESS = w3.to_checksum_address(ARB_CONTRACT_ADDRESS_RAW) if ARB_CONTRACT_ADDRESS_RAW else None
+
+# Dynamic trade sizing
+MAX_PRICE_IMPACT_PCT = float(os.getenv("MAX_PRICE_IMPACT_PCT", 1.0))  # max price impact per pool
+
+# Load contract ABI from build artifacts if available
+ARB_CONTRACT_ABI = None
+_abi_path = os.path.join(os.path.dirname(__file__), "contracts", "build", "ArbitrageExecutor.abi.json")
+if os.path.exists(_abi_path):
+    with open(_abi_path) as f:
+        ARB_CONTRACT_ABI = json.load(f)

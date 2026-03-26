@@ -1,4 +1,6 @@
 python-dotenv
 web3
+eth-abi
+py-solc-x
 pytest
 streamlit
