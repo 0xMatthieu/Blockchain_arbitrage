@@ -3,7 +3,10 @@ import logging
 from web3.logs import DISCARD
 from config import (
     w3, account, PRIVATE_KEY, MAX_GAS_LIMIT, DEX_ROUTERS,
-    BASE_CURRENCY_ADDRESS, TRADE_AMOUNT_BASE_TOKEN
+    BASE_CURRENCY_ADDRESS, TRADE_AMOUNT_BASE_TOKEN,
+    SLIPPAGE_TOLERANCE_PERCENT, DEADLINE_OFFSET,
+    LIQUIDITY_IMPACT_THRESHOLD, BALANCE_CHECK_RETRIES,
+    BALANCE_CHECK_DELAY, TX_RECEIPT_TIMEOUT
 )
 from abi import (
     ERC20_ABI, UNISWAP_V2_ROUTER_ABI, UNISWAP_V3_ROUTER_ABI, SOLIDLY_ROUTER_ABI,
@@ -12,39 +15,39 @@ from abi import (
     ALIENBASE_V2_ROUTER_ABI, BALANCER_V2_ROUTER_ABI, BALANCER_POOL_ABI,
     PANCAKE_V3_FACTORY_ABI, PANCAKE_V3_POOL_ABI, PANCAKE_V3_ROUTER_ABI, SWAAP_ROUTER_ABI, SWAAP_POOL_ABI
 )
-from dex_utils import find_router_info, check_and_approve_token
+from dex_utils import find_router_info, check_and_approve_token, get_decimals
 
-def _prepare_1inch_swap(router_info: dict, amount_in_wei: int, token_in: str, token_out: str):
+
+def _prepare_1inch_swap(router_info: dict, amount_in_wei: int, token_in: str, token_out: str,
+                        min_amount_out_wei: int = 0):
     """
     Prepares a swap transaction for the 1inch Aggregation router using on-chain calls.
-    Sets minReturn to 0 for maximum speed, skipping quotes.
     """
-    logging.info("  - Preparing 1inch on-chain swap (fast mode)...")
+    logging.info("  - Preparing 1inch on-chain swap...")
     router = w3.eth.contract(address=router_info['address'], abi=ONEINCH_V6_ROUTER_ABI)
 
     # 1inch default executor for Base network.
     EXECUTOR_ADDR = "0x1111111111111111111111111111111111111111"
-    
+
     # Empty data, so the executor tries to find the best route.
     executor_data = b""
 
-    amount_out_min_wei = 0
-    logging.info(f"  - 1inch Min Amount Out: 0 (fast mode)")
+    logging.info(f"  - 1inch Min Amount Out: {min_amount_out_wei}")
 
     final_desc = (
-        token_in,           # srcToken
-        token_out,          # dstToken
-        account.address,    # srcReceiver (will be ignored by router, but needs to be valid addr)
-        account.address,    # dstReceiver
-        amount_in_wei,      # amount
-        amount_out_min_wei, # minReturn
-        0,                  # flags (0 = simple)
-        b""                 # permit (none)
+        token_in,               # srcToken
+        token_out,              # dstToken
+        account.address,        # srcReceiver (will be ignored by router, but needs to be valid addr)
+        account.address,        # dstReceiver
+        amount_in_wei,          # amount
+        min_amount_out_wei,     # minReturn
+        0,                      # flags (0 = simple)
+        b""                     # permit (none)
     )
 
     swap_function = router.functions.swap(EXECUTOR_ADDR, final_desc, executor_data)
 
-    return swap_function, amount_out_min_wei
+    return swap_function, min_amount_out_wei
 
 def _prepare_solidly_swap(
     dex_name: str,
@@ -53,44 +56,40 @@ def _prepare_solidly_swap(
     token_in: str,
     token_out: str,
     pair_address: str = None,
-    *,
-    safety_slippage_bps: int = 300  # extra 3 % head-room on top of your global setting
+    min_amount_out_wei: int = 0,
 ):
     """
     Build a Solidly-style swap call.
-    This version skips quotes and assumes a volatile pool for speed.
+    Assumes a volatile pool for speed.
     """
     factory = router_info.get("factory")
     if not factory:
         raise ValueError(f"{dex_name}: no factory address in config")
 
-    logging.info(f"  - Solidly router detected ({dex_name}) (fast mode).")
-    
+    logging.info(f"  - Solidly router detected ({dex_name}).")
+
     if not pair_address or not w3.eth.get_code(pair_address):
         raise ValueError(f"{dex_name}: No valid pair_address provided for solidly swap.")
-    
+
     logging.info(f"  - Using provided pool address: {pair_address}")
-    
+
     # For speed, we assume the pool is volatile. This is the most common case.
     # The transaction may fail if the pool is stable.
     final_is_stable = False
-    min_out = 0
 
     router = w3.eth.contract(router_info["address"], abi=SOLIDLY_ROUTER_ABI)
-    
-    def _build_swap_fn(out_min: int):
-        final_routes = [(token_in, token_out, final_is_stable, factory)]
-        return router.functions.swapExactTokensForTokens(
-            amount_in_wei,
-            out_min,
-            final_routes,
-            account.address,
-            int(time.time()) + 300,
-        )
 
-    swap_fn = _build_swap_fn(min_out)
-    logging.info(f"  - MinOut = {min_out} (fast mode)")
-    return swap_fn, min_out
+    final_routes = [(token_in, token_out, final_is_stable, factory)]
+    swap_fn = router.functions.swapExactTokensForTokens(
+        amount_in_wei,
+        min_amount_out_wei,
+        final_routes,
+        account.address,
+        int(time.time()) + DEADLINE_OFFSET,
+    )
+
+    logging.info(f"  - MinOut = {min_amount_out_wei}")
+    return swap_fn, min_amount_out_wei
 
 def _prepare_alien_base_swap(
         dex_name: str,
@@ -99,46 +98,50 @@ def _prepare_alien_base_swap(
         token_in: str,
         token_out: str,
         pair_address: str = None,
-        fee_bps_hint: int = None
+        fee_bps_hint: int = None,
+        min_amount_out_wei: int = 0
     ):
     """
     Prepares an Alien Base (Uniswap-V2 style) swap.
-    It does not use a quoter and sets amountOutMinimum to 0 for speed.
     """
     if pair_address:
         logging.info(f"  - Alien Base V2 Using provided pool address: {pair_address}")
 
     path = [token_in, token_out]
     router_contract = w3.eth.contract(address=router_info['address'], abi=ALIENBASE_V2_ROUTER_ABI)
-    
-    logging.info(f"  - Alien Base V2 Path: {path} (fast mode)")
-    amount_out_min_wei = 0
-    logging.info(f"  - Alien Base V2 Min Amount Out (wei): {amount_out_min_wei} (fast mode)")
-    
+
+    logging.info(f"  - Alien Base V2 Path: {path}")
+    logging.info(f"  - Alien Base V2 Min Amount Out (wei): {min_amount_out_wei}")
+
     swap_function = router_contract.functions.swapExactTokensForTokens(
-        amount_in_wei, amount_out_min_wei, path, account.address, int(time.time()) + 300
+        amount_in_wei, min_amount_out_wei, path, account.address, int(time.time()) + DEADLINE_OFFSET
     )
-    return swap_function, amount_out_min_wei
+    return swap_function, min_amount_out_wei
 
 def _prepare_balancer_v2_swap(
         router_info: dict,
         amount_in_wei: int,
         token_in: str,
         token_out: str,
-        pair_address: str
+        pair_address: str,
+        min_amount_out_wei: int = 0,
+        pool_abi=None
     ):
-    """Prepares a swap for a Balancer V2-style DEX (e.g., Swaap)."""
+    """Prepares a swap for a Balancer V2-style DEX (Balancer, Swaap, etc.)."""
     if not pair_address:
         raise ValueError("Balancer V2 swaps require a pair_address (pool address).")
+
+    if pool_abi is None:
+        pool_abi = BALANCER_POOL_ABI
 
     logging.info(f"  - Balancer V2 router detected. Using pool: {pair_address}")
 
     # Get the poolId from the pool contract
-    pool_contract = w3.eth.contract(address=pair_address, abi=BALANCER_POOL_ABI)
+    pool_contract = w3.eth.contract(address=pair_address, abi=pool_abi)
     pool_id = pool_contract.functions.getPoolId().call()
 
     router_contract = w3.eth.contract(address=router_info['address'], abi=BALANCER_V2_ROUTER_ABI)
-    
+
     # For a GIVEN_IN swap, we specify the exact input amount.
     swap_kind = 0  # 0 for GIVEN_IN
 
@@ -159,16 +162,15 @@ def _prepare_balancer_v2_swap(
         False,            # toInternalBalance
     )
 
-    amount_out_min_wei = 0  # For fast swaps, we don't check for a minimum output.
-    deadline = int(time.time()) + 300
-    
-    logging.info(f"  - Balancer V2 Min Amount Out (wei): {amount_out_min_wei} (fast mode)")
-    
+    deadline = int(time.time()) + DEADLINE_OFFSET
+
+    logging.info(f"  - Balancer V2 Min Amount Out (wei): {min_amount_out_wei}")
+
     swap_function = router_contract.functions.swap(
-        single_swap, funds, amount_out_min_wei, deadline
+        single_swap, funds, min_amount_out_wei, deadline
     )
-    
-    return swap_function, amount_out_min_wei
+
+    return swap_function, min_amount_out_wei
 
 
 def _prepare_swaap_swap(
@@ -176,65 +178,28 @@ def _prepare_swaap_swap(
         amount_in_wei: int,
         token_in: str,
         token_out: str,
-        pair_address: str
+        pair_address: str,
+        min_amount_out_wei: int = 0
     ):
-    """Prepares a swap for a Swaap DEX, which uses the Balancer V2 router."""
-    if not pair_address:
-        raise ValueError("Swaap swaps require a pair_address (pool address).")
-
-    logging.info(f"  - Swaap router detected. Using pool: {pair_address}")
-
-    # Get the poolId from the Swaap pool contract
-    pool_contract = w3.eth.contract(address=pair_address, abi=SWAAP_POOL_ABI)
-    pool_id = pool_contract.functions.getPoolId().call()
-
-    # Swaap uses the Balancer V2 router.
-    router_contract = w3.eth.contract(address=router_info['address'], abi=BALANCER_V2_ROUTER_ABI)
-    
-    # For a GIVEN_IN swap, we specify the exact input amount.
-    swap_kind = 0  # 0 for GIVEN_IN
-
-    single_swap = (
-        pool_id,
-        swap_kind,
-        token_in,
-        token_out,
-        amount_in_wei,
-        b''  # userData
+    """Prepares a swap for Swaap DEX (Balancer V2 compatible, different pool ABI)."""
+    return _prepare_balancer_v2_swap(
+        router_info, amount_in_wei, token_in, token_out,
+        pair_address, min_amount_out_wei, pool_abi=SWAAP_POOL_ABI
     )
 
-    # Funds are managed by the wallet, not the Vault's internal balance.
-    funds = (
-        account.address,  # sender
-        False,            # fromInternalBalance
-        account.address,  # recipient
-        False,            # toInternalBalance
-    )
 
-    amount_out_min_wei = 0  # For fast swaps, we don't check for a minimum output.
-    deadline = int(time.time()) + 300
-    
-    logging.info(f"  - Swaap Min Amount Out (wei): {amount_out_min_wei} (fast mode)")
-    
-    swap_function = router_contract.functions.swap(
-        single_swap, funds, amount_out_min_wei, deadline
-    )
-    
-    return swap_function, amount_out_min_wei
-
-
-def _prepare_uniswap_v2_swap(router_info, amount_in_wei, path, pair_address: str = None):
-    """Prepares a swap transaction for a Uniswap V2-style DEX, skipping quotes for speed."""
+def _prepare_uniswap_v2_swap(router_info, amount_in_wei, path, pair_address: str = None,
+                              min_amount_out_wei: int = 0):
+    """Prepares a swap transaction for a Uniswap V2-style DEX."""
     if pair_address:
         logging.info(f"  - V2 Using provided pool address: {pair_address}")
     router_contract = w3.eth.contract(address=router_info['address'], abi=UNISWAP_V2_ROUTER_ABI)
-    logging.info(f"  - V2 Path: {path} (fast mode)")
-    amount_out_min_wei = 0
-    logging.info(f"  - V2 Min Amount Out (wei): {amount_out_min_wei} (fast mode)")
+    logging.info(f"  - V2 Path: {path}")
+    logging.info(f"  - V2 Min Amount Out (wei): {min_amount_out_wei}")
     swap_function = router_contract.functions.swapExactTokensForTokens(
-        amount_in_wei, amount_out_min_wei, path, account.address, int(time.time()) + 300
+        amount_in_wei, min_amount_out_wei, path, account.address, int(time.time()) + DEADLINE_OFFSET
     )
-    return swap_function, amount_out_min_wei
+    return swap_function, min_amount_out_wei
 
 def _prepare_uniswap_v3_swap(
         dex_name: str,
@@ -243,11 +208,12 @@ def _prepare_uniswap_v3_swap(
         token_in: str,
         token_out: str,
         pair_address: str = None,
-        fee_bps_hint: int = None
+        fee_bps_hint: int = None,
+        min_amount_out_wei: int = 0
     ):
     """
     Prepares a Uniswap-V3 style swap and **never** dies on
-    `quoteExactInputSingle` “execution reverted, no data”.
+    `quoteExactInputSingle` "execution reverted, no data".
     """
     router_type = router_info.get('type')
     if router_type == 'pancakeswap_v3':
@@ -271,7 +237,7 @@ def _prepare_uniswap_v3_swap(
     # ① find a pool that actually exists (code size > 0)
     # ------------------------------------------------------------------ #
     chosen_fee, pool_address = None, None
-    
+
     if pair_address and w3.eth.get_code(pair_address):
         logging.info(f"  - Using provided pool address: {pair_address}")
         pool_contract = w3.eth.contract(address=pair_address, abi=pool_abi)
@@ -337,21 +303,19 @@ def _prepare_uniswap_v3_swap(
 
     logging.info(f"  - Pool initialised with {liquidity} liquidity")
 
-    amount_out_min = 0
-
     swap_params = {
         "tokenIn": token_in,
         "tokenOut": token_out,
         "fee": chosen_fee,
         "recipient": account.address,
         "amountIn": amount_in_wei,
-        "amountOutMinimum": amount_out_min,
+        "amountOutMinimum": min_amount_out_wei,
         "sqrtPriceLimitX96": 0,
     }
 
     if router_type == 'pancakeswap_v3':
         router = w3.eth.contract(router_info["address"], abi=PANCAKE_V3_ROUTER_ABI)
-        deadline = int(time.time()) + 300
+        deadline = int(time.time()) + DEADLINE_OFFSET
         logging.info(f"  - Preparing Pancake V3 swap with deadline...")
         # Use keyword arguments for clarity to match the ABI definition
         swap_fn = router.functions.exactInputSingle(params=swap_params, deadline=deadline)
@@ -361,11 +325,13 @@ def _prepare_uniswap_v3_swap(
         # Use keyword arguments for clarity to match the ABI definition
         swap_fn = router.functions.exactInputSingle(params=swap_params)
 
+    logging.info(f"  - V3 Min Amount Out (wei): {min_amount_out_wei}")
     # Gas estimation checks removed by user request.
-    return swap_fn, amount_out_min
+    return swap_fn, min_amount_out_wei
 
 
-def _wait_for_balance_change(token_contract, owner_address, initial_balance, retries=5, delay=1.0):
+def _wait_for_balance_change(token_contract, owner_address, initial_balance,
+                             retries=BALANCE_CHECK_RETRIES, delay=BALANCE_CHECK_DELAY):
     """
     Waits for a token balance to change after a transaction.
     Polls the balance with a delay to account for RPC node sync time.
@@ -380,6 +346,70 @@ def _wait_for_balance_change(token_contract, owner_address, initial_balance, ret
             time.sleep(delay)
     logging.warning(f"  - Balance did not change after {retries} retries.")
     return token_contract.functions.balanceOf(owner_address).call() # return last known balance
+
+
+def _calc_min_amount_out(amount_in_wei, price, in_decimals, out_decimals):
+    """
+    Calculate minimum acceptable output based on expected price and slippage tolerance.
+    price = how much of out_token you get per 1 in_token (in human-readable units).
+    """
+    amount_in_human = amount_in_wei / (10 ** in_decimals)
+    expected_out_human = amount_in_human / price  # for buy: WETH_amount / (WETH_per_token) = tokens
+    slippage_factor = 1 - (SLIPPAGE_TOLERANCE_PERCENT / 100)
+    min_out_human = expected_out_human * slippage_factor
+    return int(min_out_human * (10 ** out_decimals))
+
+
+def _calc_min_amount_out_sell(amount_in_wei, price, in_decimals, out_decimals):
+    """
+    Calculate minimum acceptable output for sell side.
+    price = how much of base_token you get per 1 target_token (in human-readable units).
+    """
+    amount_in_human = amount_in_wei / (10 ** in_decimals)
+    expected_out_human = amount_in_human * price  # for sell: token_amount * (WETH_per_token) = WETH
+    slippage_factor = 1 - (SLIPPAGE_TOLERANCE_PERCENT / 100)
+    min_out_human = expected_out_human * slippage_factor
+    return int(min_out_human * (10 ** out_decimals))
+
+
+def _fresh_gas_params():
+    """Fetch current gas parameters from the network."""
+    max_priority_fee = w3.eth.max_priority_fee
+    latest_block = w3.eth.get_block('latest')
+    base_fee = latest_block['baseFeePerGas']
+    max_fee_per_gas = base_fee * 2 + max_priority_fee
+    return max_priority_fee, max_fee_per_gas
+
+
+def _build_swap(router_type, version, dex_name, router_info, amount_in_wei,
+                token_in, token_out, pair_address, fee_bps_hint, min_out):
+    """Dispatch to the correct _prepare_*_swap based on router type/version."""
+    if router_type == '1inch':
+        return _prepare_1inch_swap(router_info, amount_in_wei, token_in, token_out,
+                                   min_amount_out_wei=min_out)
+    elif router_type == 'alienbase':
+        return _prepare_alien_base_swap(dex_name, router_info, amount_in_wei, token_in, token_out,
+                                        pair_address=pair_address, fee_bps_hint=fee_bps_hint,
+                                        min_amount_out_wei=min_out)
+    elif version == 2:
+        if router_type == 'solidly':
+            return _prepare_solidly_swap(dex_name, router_info, amount_in_wei, token_in, token_out,
+                                         pair_address=pair_address, min_amount_out_wei=min_out)
+        elif router_type == 'balancer_v2':
+            return _prepare_balancer_v2_swap(router_info, amount_in_wei, token_in, token_out,
+                                             pair_address=pair_address, min_amount_out_wei=min_out)
+        elif router_type == 'swaap_v2':
+            return _prepare_swaap_swap(router_info, amount_in_wei, token_in, token_out,
+                                       pair_address=pair_address, min_amount_out_wei=min_out)
+        else:  # Default to uniswap_v2
+            return _prepare_uniswap_v2_swap(router_info, amount_in_wei, [token_in, token_out],
+                                            pair_address=pair_address, min_amount_out_wei=min_out)
+    elif version == 3:
+        return _prepare_uniswap_v3_swap(dex_name, router_info, amount_in_wei, token_in, token_out,
+                                         pair_address=pair_address, fee_bps_hint=fee_bps_hint,
+                                         min_amount_out_wei=min_out)
+    else:
+        raise NotImplementedError(f"DEX version {version} or type '{router_type}' is not supported.")
 
 
 def execute_trade(buy_pool, sell_pool, spread, token_address, token_info):
@@ -408,7 +438,7 @@ def execute_trade(buy_pool, sell_pool, spread, token_address, token_info):
         # --- Pre-flight checks ---
         logging.info("  - Performing pre-flight checks...")
         base_token_contract = w3.eth.contract(address=BASE_CURRENCY_ADDRESS, abi=ERC20_ABI)
-        base_decimals = base_token_contract.functions.decimals().call()
+        base_decimals = get_decimals(BASE_CURRENCY_ADDRESS)
         amount_in_wei = int(TRADE_AMOUNT_BASE_TOKEN * (10**base_decimals))
         wallet_balance_wei = base_token_contract.functions.balanceOf(account.address).call()
 
@@ -422,7 +452,6 @@ def execute_trade(buy_pool, sell_pool, spread, token_address, token_info):
             logging.warning("!!! TRADE SKIPPED: Could not determine USD value of trade amount.")
             return
 
-        LIQUIDITY_IMPACT_THRESHOLD = 0.1 
         if trade_amount_usd > buy_pool['liq_usd'] * LIQUIDITY_IMPACT_THRESHOLD or \
            trade_amount_usd > sell_pool['liq_usd'] * LIQUIDITY_IMPACT_THRESHOLD:
             logging.warning(f"!!! TRADE SKIPPED: Trade size (${trade_amount_usd:,.2f}) is too large for pool liquidity.")
@@ -432,40 +461,28 @@ def execute_trade(buy_pool, sell_pool, spread, token_address, token_info):
         # --- 1. BUY TRANSACTION ---
         logging.info(f"Step 1: Buying {token_name} ({token_address}) on {buy_dex_name} (v{buy_router_info['version']})...")
         target_token_contract = w3.eth.contract(address=token_address, abi=ERC20_ABI)
-        target_decimals = target_token_contract.functions.decimals().call()
+        target_decimals = get_decimals(token_address)
         initial_target_token_balance = target_token_contract.functions.balanceOf(account.address).call()
         logging.info(f"  - Initial balance of {token_name}: {initial_target_token_balance / (10**target_decimals):.6f}")
+
+        # --- Slippage-protected minimum output for buy ---
+        buy_min_out = _calc_min_amount_out(amount_in_wei, buy_pool['price'], base_decimals, target_decimals)
+        logging.info(f"  - Slippage protection: min output = {buy_min_out / (10**target_decimals):.6f} tokens ({SLIPPAGE_TOLERANCE_PERCENT}% tolerance)")
 
         # --- Transaction Preparation ---
         chain_id = w3.eth.chain_id
         router_type = buy_router_info.get('type', 'uniswap_v2')
-        buy_txn = None
 
-        max_priority_fee = w3.eth.max_priority_fee
-        latest_block = w3.eth.get_block('latest')
-        base_fee = latest_block['baseFeePerGas']
-        max_fee_per_gas = base_fee * 2 + max_priority_fee
+        max_priority_fee, max_fee_per_gas = _fresh_gas_params()
         nonce = w3.eth.get_transaction_count(account.address)
 
-        swap_function = None
-        if router_type == '1inch':
-            swap_function, _ = _prepare_1inch_swap(buy_router_info, amount_in_wei, BASE_CURRENCY_ADDRESS, token_address)
-        elif router_type == 'alienbase':
-            swap_function, _ = _prepare_alien_base_swap(buy_dex_name, buy_router_info, amount_in_wei, BASE_CURRENCY_ADDRESS, token_address, pair_address=buy_pool['pairAddress'], fee_bps_hint=buy_pool.get('feeBps'))
-        elif buy_router_info['version'] == 2:
-            if router_type == 'solidly':
-                swap_function, _ = _prepare_solidly_swap(buy_dex_name, buy_router_info, amount_in_wei, BASE_CURRENCY_ADDRESS, token_address, pair_address=buy_pool['pairAddress'])
-            elif router_type == 'balancer_v2':
-                swap_function, _ = _prepare_balancer_v2_swap(buy_router_info, amount_in_wei, BASE_CURRENCY_ADDRESS, token_address, pair_address=buy_pool['pairAddress'])
-            elif router_type == 'swaap_v2':
-                swap_function, _ = _prepare_swaap_swap(buy_router_info, amount_in_wei, BASE_CURRENCY_ADDRESS, token_address, pair_address=buy_pool['pairAddress'])
-            else: # Default to uniswapv2
-                swap_function, _ = _prepare_uniswap_v2_swap(buy_router_info, amount_in_wei, [BASE_CURRENCY_ADDRESS, token_address], pair_address=buy_pool['pairAddress'])
-        elif buy_router_info['version'] == 3:
-            swap_function, _ = _prepare_uniswap_v3_swap(buy_dex_name, buy_router_info, amount_in_wei, BASE_CURRENCY_ADDRESS, token_address, pair_address=buy_pool['pairAddress'], fee_bps_hint=buy_pool.get('feeBps'))
-        else:
-            raise NotImplementedError(f"DEX version {buy_router_info['version']} or type '{router_type}' is not supported for buys.")
-        
+        swap_function, _ = _build_swap(
+            router_type, buy_router_info['version'], buy_dex_name, buy_router_info,
+            amount_in_wei, BASE_CURRENCY_ADDRESS, token_address,
+            pair_address=buy_pool['pairAddress'], fee_bps_hint=buy_pool.get('feeBps'),
+            min_out=buy_min_out
+        )
+
         logging.info("  - Building buy transaction...")
         buy_payload = {
             'from': account.address, 'nonce': nonce,
@@ -482,7 +499,7 @@ def execute_trade(buy_pool, sell_pool, spread, token_address, token_info):
         signed_buy_txn = w3.eth.account.sign_transaction(buy_txn, PRIVATE_KEY)
         buy_tx_hash = w3.eth.send_raw_transaction(signed_buy_txn.raw_transaction)
         logging.info(f"  - Buy Tx sent: {buy_tx_hash.hex()}. Waiting for receipt...")
-        buy_receipt = w3.eth.wait_for_transaction_receipt(buy_tx_hash, timeout=120)
+        buy_receipt = w3.eth.wait_for_transaction_receipt(buy_tx_hash, timeout=TX_RECEIPT_TIMEOUT)
 
         if buy_receipt['status'] == 0:
             logging.error("  - BUY TRANSACTION FAILED (reverted). Aborting arbitrage.")
@@ -505,41 +522,33 @@ def execute_trade(buy_pool, sell_pool, spread, token_address, token_info):
         if amount_received_wei <= 0:
             logging.error("  - CRITICAL: No tokens received from buy transaction. Aborting sell.")
             return
-        
+
         # --- 2. SELL TRANSACTION ---
         logging.info(f"Step 2: Selling {amount_received_wei / (10**target_decimals)} of {token_name} ({token_address}) on {sell_dex_name} (v{sell_router_info['version']})...")
-        
+
         initial_base_token_balance = base_token_contract.functions.balanceOf(account.address).call()
         logging.info(f"  - Initial balance of base token: {initial_base_token_balance / (10**base_decimals):.6f}")
 
-        # --- Sell Transaction Preparation ---
-        router_type_sell = sell_router_info.get('type', 'uniswapv2')
-        sell_txn = None
+        # --- Slippage-protected minimum output for sell ---
+        sell_min_out = _calc_min_amount_out_sell(amount_received_wei, sell_pool['price'], target_decimals, base_decimals)
+        logging.info(f"  - Slippage protection: min output = {sell_min_out / (10**base_decimals):.6f} base tokens ({SLIPPAGE_TOLERANCE_PERCENT}% tolerance)")
+
+        # --- Refresh gas prices for sell transaction ---
+        sell_max_priority_fee, sell_max_fee_per_gas = _fresh_gas_params()
         sell_nonce = w3.eth.get_transaction_count(account.address)
 
-        sell_swap_function = None
-        if router_type_sell == '1inch':
-            sell_swap_function, _ = _prepare_1inch_swap(sell_router_info, amount_received_wei, token_address, BASE_CURRENCY_ADDRESS)
-        elif router_type_sell == 'alienbase':
-            sell_swap_function, _ = _prepare_alien_base_swap(sell_dex_name, sell_router_info, amount_received_wei, token_address, BASE_CURRENCY_ADDRESS, pair_address=sell_pool['pairAddress'], fee_bps_hint=sell_pool.get('feeBps'))
-        elif sell_router_info['version'] == 2:
-            if router_type_sell == 'solidly':
-                sell_swap_function, _ = _prepare_solidly_swap(sell_dex_name, sell_router_info, amount_received_wei, token_address, BASE_CURRENCY_ADDRESS, pair_address=sell_pool['pairAddress'])
-            elif router_type_sell == 'balancer_v2':
-                sell_swap_function, _ = _prepare_balancer_v2_swap(sell_router_info, amount_received_wei, token_address, BASE_CURRENCY_ADDRESS, pair_address=sell_pool['pairAddress'])
-            elif router_type_sell == 'swaap':
-                sell_swap_function, _ = _prepare_swaap_swap(sell_router_info, amount_received_wei, token_address, BASE_CURRENCY_ADDRESS, pair_address=sell_pool['pairAddress'])
-            else: # Default to uniswapv2
-                sell_swap_function, _ = _prepare_uniswap_v2_swap(sell_router_info, amount_received_wei, [token_address, BASE_CURRENCY_ADDRESS], pair_address=sell_pool['pairAddress'])
-        elif sell_router_info['version'] == 3:
-            sell_swap_function, _ = _prepare_uniswap_v3_swap(sell_dex_name, sell_router_info, amount_received_wei, token_address, BASE_CURRENCY_ADDRESS, pair_address=sell_pool['pairAddress'], fee_bps_hint=sell_pool.get('feeBps'))
-        else:
-            raise NotImplementedError(f"DEX version {sell_router_info['version']} or type '{router_type_sell}' is not supported for sells.")
+        router_type_sell = sell_router_info.get('type', 'uniswap_v2')
+        sell_swap_function, _ = _build_swap(
+            router_type_sell, sell_router_info['version'], sell_dex_name, sell_router_info,
+            amount_received_wei, token_address, BASE_CURRENCY_ADDRESS,
+            pair_address=sell_pool['pairAddress'], fee_bps_hint=sell_pool.get('feeBps'),
+            min_out=sell_min_out
+        )
 
         logging.info("  - Building sell transaction...")
         sell_payload = {
             'from': account.address, 'nonce': sell_nonce,
-            'maxFeePerGas': max_fee_per_gas, 'maxPriorityFeePerGas': max_priority_fee,
+            'maxFeePerGas': sell_max_fee_per_gas, 'maxPriorityFeePerGas': sell_max_priority_fee,
             'chainId': chain_id
         }
         # Gas estimation removed by user request. Using MAX_GAS_LIMIT.
@@ -548,11 +557,11 @@ def execute_trade(buy_pool, sell_pool, spread, token_address, token_info):
 
         if not sell_txn:
             raise Exception("Failed to build sell transaction.")
-            
+
         signed_sell_txn = w3.eth.account.sign_transaction(sell_txn, PRIVATE_KEY)
         sell_tx_hash = w3.eth.send_raw_transaction(signed_sell_txn.raw_transaction)
         logging.info(f"  - Sell Tx sent: {sell_tx_hash.hex()}. Waiting for receipt...")
-        sell_receipt = w3.eth.wait_for_transaction_receipt(sell_tx_hash, timeout=120)
+        sell_receipt = w3.eth.wait_for_transaction_receipt(sell_tx_hash, timeout=TX_RECEIPT_TIMEOUT)
 
         if sell_receipt['status'] == 0:
             logging.error("  - SELL TRANSACTION FAILED. You are now holding the bought tokens.")
@@ -572,24 +581,36 @@ def execute_trade(buy_pool, sell_pool, spread, token_address, token_info):
                 price_diff_pct = ((executed_sell_price - theoretical_sell_price) / theoretical_sell_price) * 100 if theoretical_sell_price > 0 else 0
                 logging.info(f"  - Executed sell price: {executed_sell_price:.8f} vs Theoretical: {theoretical_sell_price:.8f} ({price_diff_pct:+.2f}%)")
 
-            # Profit is the final amount received from the sell, minus the initial amount spent on the buy.
-            # This now implicitly includes the gas cost of the sell transaction.
-            profit_wei = final_amount_out_wei
-            profit_base_token = (final_amount_out_wei - amount_in_wei) / (10**base_decimals)
-            profit_percent = ((final_amount_out_wei - amount_in_wei) / amount_in_wei) * 100 if amount_in_wei > 0 else 0
+            # Profit calculation including gas costs
+            buy_gas_cost_wei = buy_receipt['gasUsed'] * buy_receipt['effectiveGasPrice']
+            sell_gas_cost_wei = sell_receipt['gasUsed'] * sell_receipt['effectiveGasPrice']
+            total_gas_cost_wei = buy_gas_cost_wei + sell_gas_cost_wei
+            total_gas_cost_eth = total_gas_cost_wei / (10**18)  # gas is always in native ETH
 
-            if (final_amount_out_wei - amount_in_wei) > 0:
-                logging.info(f"  - SUCCESS! Arbitrage profitable. Profit: {profit_base_token:.6f} base tokens ({profit_percent:+.2f}%).")
+            # Token profit (before gas)
+            token_profit_wei = final_amount_out_wei - amount_in_wei
+            token_profit = token_profit_wei / (10**base_decimals)
+
+            # Net profit (after gas) — convert gas from ETH to base token if needed
+            # On Base, gas is paid in ETH which is also the typical base currency
+            net_profit_wei = token_profit_wei - total_gas_cost_wei
+            net_profit = net_profit_wei / (10**base_decimals)
+            net_profit_percent = (net_profit_wei / amount_in_wei) * 100 if amount_in_wei > 0 else 0
+
+            logging.info(f"  - Gas costs: buy={buy_gas_cost_wei} wei, sell={sell_gas_cost_wei} wei, total={total_gas_cost_eth:.8f} ETH")
+
+            if net_profit_wei > 0:
+                logging.info(f"  - SUCCESS! Net profit (after gas): {net_profit:.6f} base tokens ({net_profit_percent:+.2f}%).")
             else:
-                logging.warning(f"  - LOSS. Arbitrage resulted in a loss of: {abs(profit_base_token):.6f} base tokens ({profit_percent:+.2f}%).")
-            logging.info(f"time to perform trades : {time.time() - start_trade_time}")
+                logging.warning(f"  - LOSS (after gas): {abs(net_profit):.6f} base tokens ({net_profit_percent:+.2f}%). Token P&L: {token_profit:.6f}, Gas: -{total_gas_cost_eth:.8f}")
+            logging.info(f"  - Time to perform trades: {time.time() - start_trade_time:.2f}s")
 
         # --- 3. POST-TRADE APPROVALS ---
         # Some DEXs might require re-approval after each trade.
         # We ensure approvals are set for the next potential trade.
         infinite_approval_amount = 2**256 - 1
         logging.info("Step 3: Performing post-trade approval checks...")
-        
+
         # Approve base currency for the buy router
         logging.info(f"  - Checking approval for base currency on {buy_dex_name} router...")
         check_and_approve_token(
@@ -597,7 +618,7 @@ def execute_trade(buy_pool, sell_pool, spread, token_address, token_info):
             spender_address=buy_router_info['address'],
             amount_to_approve_wei=infinite_approval_amount
         )
-        
+
         # Approve target token for the sell router
         logging.info(f"  - Checking approval for {token_name} on {sell_dex_name} router...")
         check_and_approve_token(

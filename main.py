@@ -9,7 +9,7 @@ from config import (
     TRADE_AMOUNT_BASE_TOKEN, V2_FEE_BPS, V3_FEE_MAP
 )
 from abi import ERC20_ABI
-from dex_utils import get_lp_price, check_and_approve_token
+from dex_utils import get_lp_price, check_and_approve_token, get_decimals
 from trading import execute_trade
 from logging_config import setup_logging
 
@@ -34,7 +34,7 @@ class ArbitrageBot:
     def analyze_and_trade(self, pairs, token_address):
         if time.time() - self.last_trade_attempt_ts < TRADE_COOLDOWN_SECONDS:
             return
-        if len(pairs) < 2 or pairs is None:
+        if not pairs or len(pairs) < 2:
             token_symbol = self.TOKEN_INFO.get(token_address, {}).get('symbol', f"[{token_address[-6:]}]")
             pair_symbol = pairs[0]['pair'] if pairs else token_symbol
             self.latest_spread_info[token_address] = f"{pair_symbol:<20} | Not enough valid pools to analyze."
@@ -186,8 +186,7 @@ class ArbitrageBot:
         
         if check_dex:
             logging.info("--- Running Initial Approval Checks ---")
-            base_token_contract = w3.eth.contract(address=BASE_CURRENCY_ADDRESS, abi=ERC20_ABI)
-            base_decimals = base_token_contract.functions.decimals().call()
+            base_decimals = get_decimals(BASE_CURRENCY_ADDRESS)
             amount_to_approve_wei = int(TRADE_AMOUNT_BASE_TOKEN * (10**base_decimals))
             unlimited_allowance = 2**256 - 1
             for dex, info in DEX_ROUTERS.items():

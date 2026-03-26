@@ -1,8 +1,18 @@
 import time
 import logging
 from config import (w3, account, PRIVATE_KEY, MAX_GAS_LIMIT, DEX_ROUTERS, BASE_CURRENCY_ADDRESS,
-                    TRADE_AMOUNT_BASE_TOKEN)
+                    TRADE_AMOUNT_BASE_TOKEN, TX_RECEIPT_TIMEOUT)
 from abi import ERC20_ABI, SOLIDLY_PAIR_ABI, MINIMAL_V2_PAIR_ABI, UNISWAP_V3_POOL_ABI, PANCAKE_V3_POOL_ABI
+
+# Cache for token decimals — immutable on-chain, no need to re-fetch
+_decimals_cache = {}
+
+def get_decimals(token_address):
+    """Returns decimals for a token, caching the result."""
+    if token_address not in _decimals_cache:
+        contract = w3.eth.contract(address=token_address, abi=ERC20_ABI)
+        _decimals_cache[token_address] = contract.functions.decimals().call()
+    return _decimals_cache[token_address]
 
 def get_token_info(token_address):
     """Fetches name and symbol for a given token address."""
@@ -112,7 +122,7 @@ def check_and_approve_token(token_address: str,
                           ).build_transaction(payload)
             signed = w3.eth.account.sign_transaction(reset_tx, PRIVATE_KEY)
             tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
-            w3.eth.wait_for_transaction_receipt(tx_hash)
+            w3.eth.wait_for_transaction_receipt(tx_hash, timeout=TX_RECEIPT_TIMEOUT)
             logging.info(f"Reset tx mined: {tx_hash.hex()}")
             base_nonce += 1      # increment local nonce
             bump += 10           # +10 % gas bump for next tx  :contentReference[oaicite:3]{index=3}
@@ -125,7 +135,7 @@ def check_and_approve_token(token_address: str,
                         ).build_transaction(payload)
         signed = w3.eth.account.sign_transaction(approve_tx, PRIVATE_KEY)
         tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
-        w3.eth.wait_for_transaction_receipt(tx_hash)
+        w3.eth.wait_for_transaction_receipt(tx_hash, timeout=TX_RECEIPT_TIMEOUT)
         logging.info(f"Approve tx mined: {tx_hash.hex()}")
 
     except Exception as err:
@@ -223,36 +233,27 @@ def _get_uniswap_or_pancakeswap_pool_price(pool_address: str, router_type: str, 
 def get_lp_price(pool, token_address):
     dex_name = pool['dex']
     router_info = find_router_info(dex_name, DEX_ROUTERS, pair_address=pool.get('pairAddress'))
+    if not router_info:
+        return None
     router_type = router_info.get('type', 'uniswap_v2')
 
-
-    # shall be done in a dedicated function called at startup, will not change
-    base_token_contract = w3.eth.contract(address=BASE_CURRENCY_ADDRESS, abi=ERC20_ABI)
-    base_decimals = base_token_contract.functions.decimals().call()
-
-    quote_token_contract = w3.eth.contract(address=token_address, abi=ERC20_ABI)
-    quote_decimals = quote_token_contract.functions.decimals().call()
+    base_decimals = get_decimals(BASE_CURRENCY_ADDRESS)
+    quote_decimals = get_decimals(token_address)
 
     price = None
-    if router_type == '1inch':
-        price = None
-    elif router_type == 'alienbase':
+    if router_type in ('1inch', 'alienbase', 'balancer_v2', 'swaap_v2'):
         price = None
     elif router_info['version'] == 2:
         if router_type == 'solidly':
             price = _get_solidly_pool_price(pool['pairAddress'], token_address, BASE_CURRENCY_ADDRESS, quote_decimals,
                             base_decimals)
-        elif router_type == 'balancer_v2':
-            price = None
-        elif router_type == 'swaap_v2':
-            price = None
-        else:  # Default to uniswapv2
+        else:  # uniswap_v2 and other V2 forks — no on-chain price impl yet
             price = None
     elif router_info['version'] == 3:
         price = _get_uniswap_or_pancakeswap_pool_price(pool['pairAddress'], router_type, token_address, BASE_CURRENCY_ADDRESS, quote_decimals,
                             base_decimals)
     else:
-        raise NotImplementedError(
-            f"DEX version {router_info['version']} or type '{router_type}' is not supported for buys.")
+        logging.warning(f"DEX version {router_info['version']} or type '{router_type}' is not supported for LP price.")
+        price = None
 
     return price

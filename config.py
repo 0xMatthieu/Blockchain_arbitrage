@@ -1,5 +1,6 @@
 import os
 import json
+import logging
 from dotenv import load_dotenv
 from web3 import Web3
 
@@ -24,6 +25,13 @@ V3_FEE_MAP = {100: 1,    # Uniswap 0.01 %
               10000: 100 # 1 %
              }
 
+# --- Trading Constants ---
+DEADLINE_OFFSET = 300              # seconds added to current time for tx deadlines
+LIQUIDITY_IMPACT_THRESHOLD = 0.1   # max trade size as fraction of pool liquidity
+BALANCE_CHECK_RETRIES = 5          # retries when waiting for balance change
+BALANCE_CHECK_DELAY = 1.0          # seconds between balance check retries
+TX_RECEIPT_TIMEOUT = 120           # seconds to wait for transaction receipt
+
 # --- Blockchain Configuration ---
 BASE_CHAIN_ID = os.getenv("BASE_CHAIN_ID")
 BASE_RPC_URL = os.getenv("BASE_RPC_URL")
@@ -38,7 +46,7 @@ MAX_GAS_LIMIT = int(os.getenv("MAX_GAS_LIMIT", 500000))
 
 # --- DEX Router Configuration Loading with Debugging ---
 dex_routers_env_string = os.getenv("DEX_ROUTERS")
-print(f"DEBUG: Raw DEX_ROUTERS string from .env: {dex_routers_env_string}")
+logging.debug(f"Raw DEX_ROUTERS string from .env: {dex_routers_env_string}")
 
 try:
     # Use json.loads for safer and more standard parsing of the DEX_ROUTERS string
