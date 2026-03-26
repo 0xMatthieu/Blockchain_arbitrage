@@ -447,16 +447,19 @@ def execute_trade(buy_pool, sell_pool, spread, token_address, token_info):
             return
         logging.info(f"  - Wallet balance check passed. Have {wallet_balance_wei / (10**base_decimals):.6f}, need {TRADE_AMOUNT_BASE_TOKEN}.")
 
-        trade_amount_usd = TRADE_AMOUNT_BASE_TOKEN * buy_pool.get('base_currency_price_usd', 0)
-        if trade_amount_usd == 0:
-            logging.warning("!!! TRADE SKIPPED: Could not determine USD value of trade amount.")
-            return
-
-        if trade_amount_usd > buy_pool['liq_usd'] * LIQUIDITY_IMPACT_THRESHOLD or \
-           trade_amount_usd > sell_pool['liq_usd'] * LIQUIDITY_IMPACT_THRESHOLD:
-            logging.warning(f"!!! TRADE SKIPPED: Trade size (${trade_amount_usd:,.2f}) is too large for pool liquidity.")
-            return
-        logging.info(f"  - Liquidity check passed. Trade size ${trade_amount_usd:,.2f} is reasonable for both pools.")
+        # USD-based liquidity impact check (only when USD data is available)
+        base_currency_price_usd = buy_pool.get('base_currency_price_usd', 0)
+        buy_liq = buy_pool.get('liq_usd', 0)
+        sell_liq = sell_pool.get('liq_usd', 0)
+        if base_currency_price_usd > 0 and buy_liq > 0 and sell_liq > 0:
+            trade_amount_usd = TRADE_AMOUNT_BASE_TOKEN * base_currency_price_usd
+            if trade_amount_usd > buy_liq * LIQUIDITY_IMPACT_THRESHOLD or \
+               trade_amount_usd > sell_liq * LIQUIDITY_IMPACT_THRESHOLD:
+                logging.warning(f"!!! TRADE SKIPPED: Trade size (${trade_amount_usd:,.2f}) is too large for pool liquidity.")
+                return
+            logging.info(f"  - Liquidity check passed. Trade size ${trade_amount_usd:,.2f} is reasonable for both pools.")
+        else:
+            logging.info("  - USD liquidity data not available, skipping liquidity impact check.")
 
         # --- 1. BUY TRANSACTION ---
         logging.info(f"Step 1: Buying {token_name} ({token_address}) on {buy_dex_name} (v{buy_router_info['version']})...")

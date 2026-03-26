@@ -9,12 +9,7 @@ load_dotenv()
 
 # --- API and Bot Configuration ---
 TOKEN_ADDRESSES_RAW = os.getenv("TOKEN_ADDRESSES", "")
-MIN_LIQUIDITY_USD = float(os.getenv("MIN_LIQUIDITY_USD", 1000))
-MIN_VOLUME_USD = float(os.getenv("MIN_VOLUME_USD", 1000))
-POLL_INTERVAL_ERROR = float(os.getenv("POLL_INTERVAL_ERROR", 10.0))
 MIN_SPREAD_PERCENT = float(os.getenv("MIN_SPREAD_PERCENT", 1.0))
-API_CALLS_PER_MINUTE = 280
-POLL_INTERVAL = 60.0 / API_CALLS_PER_MINUTE
 TRADE_COOLDOWN_SECONDS = 60
 
 V2_FEE_BPS = 20          # Aerodrome, BaseSwap, etc. (0.20 %)
@@ -31,6 +26,7 @@ LIQUIDITY_IMPACT_THRESHOLD = 0.1   # max trade size as fraction of pool liquidit
 BALANCE_CHECK_RETRIES = 5          # retries when waiting for balance change
 BALANCE_CHECK_DELAY = 1.0          # seconds between balance check retries
 TX_RECEIPT_TIMEOUT = 120           # seconds to wait for transaction receipt
+ON_CHAIN_POLL_INTERVAL = float(os.getenv("ON_CHAIN_POLL_INTERVAL", 0.5))  # seconds between on-chain price polls
 
 # --- Blockchain Configuration ---
 BASE_CHAIN_ID = os.getenv("BASE_CHAIN_ID")

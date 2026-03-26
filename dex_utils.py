@@ -2,7 +2,9 @@ import time
 import logging
 from config import (w3, account, PRIVATE_KEY, MAX_GAS_LIMIT, DEX_ROUTERS, BASE_CURRENCY_ADDRESS,
                     TRADE_AMOUNT_BASE_TOKEN, TX_RECEIPT_TIMEOUT)
-from abi import ERC20_ABI, SOLIDLY_PAIR_ABI, MINIMAL_V2_PAIR_ABI, UNISWAP_V3_POOL_ABI, PANCAKE_V3_POOL_ABI
+from abi import (ERC20_ABI, SOLIDLY_PAIR_ABI, MINIMAL_V2_PAIR_ABI, UNISWAP_V3_POOL_ABI,
+                 PANCAKE_V3_POOL_ABI, V2_FACTORY_ABI, SOLIDLY_FACTORY_ABI,
+                 UNISWAP_V3_FACTORY_ABI, PANCAKE_V3_FACTORY_ABI)
 
 # Cache for token decimals — immutable on-chain, no need to re-fetch
 _decimals_cache = {}
@@ -22,8 +24,6 @@ def get_token_info(token_address):
         name = token_contract.functions.name().call()
         return {'symbol': symbol, 'name': name}
     except Exception as e:
-        # Some tokens might not have string name/symbol, or might fail for other reasons.
-        # Fallback to using address for identification.
         logging.warning(f"  - Could not fetch name/symbol for {token_address}. Error: {str(e)[:100]}")
         symbol_fallback = f"[{token_address[-6:]}]"
         return {'symbol': symbol_fallback, 'name': token_address}
@@ -34,10 +34,6 @@ def find_router_info(dex_id, routers, pair_address=None):
 
     possible_matches = []
     for key, info in routers.items():
-        # A key matches if it is the dex_id, or if its first part (split by _) matches the dex_id.
-        # e.g., 'uniswap' should match 'uniswap_v2' and 'uniswap_v3'.
-        # 'baseswap' should match 'baseswap'.
-        # 'swap' should NOT match 'baseswap'.
         key_parts = key.replace('-', '_').split('_')
         if dex_id == key or dex_id == key_parts[0] or dex_id == info["address"].lower():
             possible_matches.append(info)
@@ -49,8 +45,6 @@ def find_router_info(dex_id, routers, pair_address=None):
     if len(possible_matches) == 1:
         return possible_matches[0]
 
-    # If multiple matches, try to disambiguate using the pair's factory address.
-    # This primarily applies to V2-style forks. V3 pools don't have a `factory()` getter.
     if pair_address:
         try:
             pair_contract = w3.eth.contract(address=pair_address, abi=MINIMAL_V2_PAIR_ABI)
@@ -61,10 +55,8 @@ def find_router_info(dex_id, routers, pair_address=None):
                     return info
             logging.warning(f"  - Could not find a router with factory {on_chain_factory} among candidates.")
         except Exception as e:
-            # This can fail if it's not a V2-style pair, or for other reasons.
             logging.debug(f"Could not query factory for pair {pair_address} to disambiguate router: {e}")
 
-    # Fallback: prefer the one with the highest version number.
     logging.debug(f"Found multiple possible routers for '{dex_id}'. Selecting highest version as fallback.")
     possible_matches.sort(key=lambda x: x.get('version', 0), reverse=True)
     return possible_matches[0]
@@ -124,8 +116,8 @@ def check_and_approve_token(token_address: str,
             tx_hash = w3.eth.send_raw_transaction(signed.raw_transaction)
             w3.eth.wait_for_transaction_receipt(tx_hash, timeout=TX_RECEIPT_TIMEOUT)
             logging.info(f"Reset tx mined: {tx_hash.hex()}")
-            base_nonce += 1      # increment local nonce
-            bump += 10           # +10 % gas bump for next tx  :contentReference[oaicite:3]{index=3}
+            base_nonce += 1
+            bump += 10
 
         # Final approve -----------------------------------------------------
         logging.info(f"Approving {amount_to_approve_wei}…")
@@ -142,6 +134,40 @@ def check_and_approve_token(token_address: str,
         logging.error(f"Approval flow failed: {err}")
 
 
+# --- on-chain price functions -----------------------------------------------
+
+def _get_v2_pool_price(pool_address, token_in_address, token_out_address, token_in_decimals, token_out_decimals):
+    """
+    Retrieves the spot price from a Uniswap V2-style pool using getReserves.
+    Returns the price of token_in in terms of token_out (how much token_out per token_in).
+    """
+    try:
+        pair = w3.eth.contract(address=pool_address, abi=MINIMAL_V2_PAIR_ABI)
+        reserve0, reserve1, _ = pair.functions.getReserves().call()
+        token0 = w3.to_checksum_address(pair.functions.token0().call())
+
+        token_in_address = w3.to_checksum_address(token_in_address)
+
+        if token0 == token_in_address:
+            reserve_in, reserve_out = reserve0, reserve1
+            dec_in, dec_out = token_in_decimals, token_out_decimals
+        else:
+            reserve_in, reserve_out = reserve1, reserve0
+            dec_in, dec_out = token_in_decimals, token_out_decimals
+
+        if reserve_in == 0:
+            return None
+
+        # price = (reserve_out / 10^dec_out) / (reserve_in / 10^dec_in)
+        price = (reserve_out / (10 ** dec_out)) / (reserve_in / (10 ** dec_in))
+
+        logging.debug(f"V2 pool {pool_address} price for {token_in_address}: {price}")
+        return price
+    except Exception as e:
+        logging.warning(f"Could not get price from V2 pool {pool_address} via getReserves. Error: {e}")
+        return None
+
+
 def _get_solidly_pool_price(pool_address: str, token_in_address: str, token_out_address: str, token_in_decimals: int,
                             token_out_decimals: int):
     """
@@ -151,13 +177,8 @@ def _get_solidly_pool_price(pool_address: str, token_in_address: str, token_out_
     try:
         pool_contract = w3.eth.contract(address=pool_address, abi=SOLIDLY_PAIR_ABI)
 
-        # We want the price of token_in, so we pass it as tokenIn.
-        # The amountIn is 1 token_in, expressed in its smallest unit (wei).
         amount_in = int(TRADE_AMOUNT_BASE_TOKEN * (10 ** token_in_decimals))
 
-        # The `prices` function takes tokenIn, amountIn, and points.
-        # We use 1 point to get a recent/spot price.
-        # The function returns an array of prices; we take the first value.
         prices_out = pool_contract.functions.prices(token_in_address, amount_in, 1).call()
 
         if not prices_out:
@@ -165,14 +186,11 @@ def _get_solidly_pool_price(pool_address: str, token_in_address: str, token_out_
             return None
 
         amount_out_wei = prices_out[0]
-
-        # The price is the amount of token_out received for 1 token_in.
         price = (amount_out_wei / (10 ** token_out_decimals))
 
         logging.debug(f"Solidly pool {pool_address} price for {token_in_address}: {price} {token_out_address}")
         return price
     except Exception as e:
-        # This can happen if the contract doesn't have the `prices` function or other issues.
         logging.warning(f"Could not get price from Solidly pool {pool_address} via `prices` function. Error: {e}")
         return None
 
@@ -185,44 +203,38 @@ def _get_uniswap_or_pancakeswap_pool_price(pool_address: str, router_type: str, 
     try:
         if router_type == 'pancakeswap_v3':
             pool_abi = PANCAKE_V3_POOL_ABI
-        else: # Default to Uniswap V3
+        else:
             pool_abi = UNISWAP_V3_POOL_ABI
-        
+
         pool_contract = w3.eth.contract(address=pool_address, abi=pool_abi)
         sqrt_price_x96, *_ = pool_contract.functions.slot0().call()
 
         if sqrt_price_x96 == 0:
             logging.warning(f"V3 pool {pool_address} slot0.sqrtPriceX96 is 0. Pool may not be initialized.")
             return None
-        
-        # The price from slot0 is for token0 in terms of token1.
+
         price_raw_t0_t1 = (sqrt_price_x96 / 2**96) ** 2
 
         pool_token0_addr = w3.to_checksum_address(pool_contract.functions.token0().call())
         token_in_address = w3.to_checksum_address(token_in_address)
 
-        # Determine which token is token0 and which is token1 to apply decimals correctly
         if pool_token0_addr == token_in_address:
             decimals_t0 = token_in_decimals
             decimals_t1 = token_out_decimals
         else:
             decimals_t0 = token_out_decimals
             decimals_t1 = token_in_decimals
-        
-        # Adjust price for decimals. This gives the price of token0 in terms of token1.
+
         price_t0_t1_adj = price_raw_t0_t1 * (10**decimals_t0) / (10**decimals_t1)
-        
-        # We need to return price of token_in in terms of token_out
+
         if pool_token0_addr == token_in_address:
-            # token_in is T0. We need price(T0/T1), which is what we have.
             price = price_t0_t1_adj
         else:
-            # token_in is T1. We need price(T1/T0), so we invert price(T0/T1).
             if price_t0_t1_adj == 0:
                 logging.warning(f"Calculated V3 price for pool {pool_address} is zero, cannot invert.")
                 return None
             price = 1 / price_t0_t1_adj
-        
+
         logging.debug(f"Uniswap/Pancake V3 pool {pool_address} price for {token_in_address}: {price} {token_out_address}")
         return price
 
@@ -230,7 +242,9 @@ def _get_uniswap_or_pancakeswap_pool_price(pool_address: str, router_type: str, 
         logging.warning(f"Could not get price from V3 pool {pool_address} via `slot0`. Error: {e}")
         return None
 
+
 def get_lp_price(pool, token_address):
+    """Get on-chain price for a pool. Returns price of token in terms of BASE_CURRENCY, or None."""
     dex_name = pool['dex']
     router_info = find_router_info(dex_name, DEX_ROUTERS, pair_address=pool.get('pairAddress'))
     if not router_info:
@@ -240,20 +254,157 @@ def get_lp_price(pool, token_address):
     base_decimals = get_decimals(BASE_CURRENCY_ADDRESS)
     quote_decimals = get_decimals(token_address)
 
-    price = None
-    if router_type in ('1inch', 'alienbase', 'balancer_v2', 'swaap_v2'):
-        price = None
+    if router_type in ('1inch', 'balancer_v2', 'swaap_v2'):
+        return None
     elif router_info['version'] == 2:
         if router_type == 'solidly':
-            price = _get_solidly_pool_price(pool['pairAddress'], token_address, BASE_CURRENCY_ADDRESS, quote_decimals,
-                            base_decimals)
-        else:  # uniswap_v2 and other V2 forks — no on-chain price impl yet
-            price = None
+            return _get_solidly_pool_price(pool['pairAddress'], token_address, BASE_CURRENCY_ADDRESS,
+                                           quote_decimals, base_decimals)
+        else:
+            # V2 forks: uniswap_v2, sushiswap, baseswap, alienbase
+            return _get_v2_pool_price(pool['pairAddress'], token_address, BASE_CURRENCY_ADDRESS,
+                                      quote_decimals, base_decimals)
     elif router_info['version'] == 3:
-        price = _get_uniswap_or_pancakeswap_pool_price(pool['pairAddress'], router_type, token_address, BASE_CURRENCY_ADDRESS, quote_decimals,
-                            base_decimals)
+        return _get_uniswap_or_pancakeswap_pool_price(pool['pairAddress'], router_type, token_address,
+                                                       BASE_CURRENCY_ADDRESS, quote_decimals, base_decimals)
     else:
         logging.warning(f"DEX version {router_info['version']} or type '{router_type}' is not supported for LP price.")
-        price = None
+        return None
 
-    return price
+
+# --- on-chain pool discovery ------------------------------------------------
+
+ZERO_ADDRESS = "0x" + "00" * 20
+V3_FEE_TIERS = [500, 3000, 10000, 2500, 100]
+
+def _has_code(address):
+    """Check if an address has deployed contract code."""
+    return address and address != ZERO_ADDRESS and w3.eth.get_code(address)
+
+
+def discover_pools(token_address):
+    """
+    Discover all pools for a token across configured DEXes by querying factory contracts on-chain.
+    Returns a list of pool dicts with metadata.
+    """
+    token_address = w3.to_checksum_address(token_address)
+    base_address = BASE_CURRENCY_ADDRESS
+    token_info = get_token_info(token_address)
+    base_info = get_token_info(base_address)
+    pair_label = f"{token_info['symbol']}/{base_info['symbol']}"
+
+    pools = []
+
+    for dex_key, router_info in DEX_ROUTERS.items():
+        router_type = router_info.get('type', 'uniswap_v2')
+        factory_addr = router_info.get('factory')
+
+        # Skip DEXes without a factory (aggregators like 1inch)
+        if not factory_addr:
+            logging.debug(f"  - {dex_key}: no factory, skipping discovery")
+            continue
+
+        try:
+            if router_type == 'solidly':
+                _discover_solidly(pools, dex_key, router_info, factory_addr, token_address, base_address, pair_label)
+            elif router_info['version'] == 3:
+                _discover_v3(pools, dex_key, router_info, factory_addr, token_address, base_address, pair_label)
+            elif router_info['version'] == 2:
+                _discover_v2(pools, dex_key, router_info, factory_addr, token_address, base_address, pair_label)
+        except Exception as e:
+            logging.warning(f"  - {dex_key}: discovery failed: {e}")
+
+    logging.info(f"  Discovered {len(pools)} pools for {pair_label}")
+    return pools
+
+
+def _discover_v2(pools, dex_key, router_info, factory_addr, token_address, base_address, pair_label):
+    """Discover V2-style pools via factory.getPair()."""
+    factory = w3.eth.contract(address=factory_addr, abi=V2_FACTORY_ABI)
+    pair_addr = factory.functions.getPair(token_address, base_address).call()
+
+    if not _has_code(pair_addr):
+        return
+
+    # Verify pool has reserves
+    pair = w3.eth.contract(address=pair_addr, abi=MINIMAL_V2_PAIR_ABI)
+    r0, r1, _ = pair.functions.getReserves().call()
+    if r0 == 0 or r1 == 0:
+        logging.info(f"  - {dex_key}: pool {pair_addr} has zero reserves, skipping")
+        return
+
+    pools.append({
+        'dex': dex_key,
+        'pair': pair_label,
+        'pairAddress': pair_addr,
+        'feeBps': 0,
+        'liq_usd': 0,
+        'base_currency_price_usd': 0,
+    })
+    logging.info(f"  - {dex_key}: found V2 pool {pair_addr}")
+
+
+def _discover_solidly(pools, dex_key, router_info, factory_addr, token_address, base_address, pair_label):
+    """Discover Solidly-style pools (volatile + stable)."""
+    factory = w3.eth.contract(address=factory_addr, abi=SOLIDLY_FACTORY_ABI)
+
+    for stable in [False, True]:
+        pool_addr = factory.functions.getPool(token_address, base_address, stable).call()
+        if not _has_code(pool_addr):
+            continue
+
+        # Verify pool has reserves
+        pair = w3.eth.contract(address=pool_addr, abi=SOLIDLY_PAIR_ABI)
+        r0, r1, _ = pair.functions.getReserves().call()
+        if r0 == 0 or r1 == 0:
+            logging.info(f"  - {dex_key}: pool {pool_addr} ({'stable' if stable else 'volatile'}) has zero reserves, skipping")
+            continue
+
+        pool_type = "stable" if stable else "volatile"
+        pools.append({
+            'dex': dex_key,
+            'pair': f"{pair_label} ({pool_type})",
+            'pairAddress': pool_addr,
+            'feeBps': 0,
+            'liq_usd': 0,
+            'base_currency_price_usd': 0,
+        })
+        logging.info(f"  - {dex_key}: found Solidly {pool_type} pool {pool_addr}")
+
+
+def _discover_v3(pools, dex_key, router_info, factory_addr, token_address, base_address, pair_label):
+    """Discover V3-style pools across fee tiers."""
+    router_type = router_info.get('type', 'uniswap_v3')
+    if router_type == 'pancakeswap_v3':
+        factory_abi = PANCAKE_V3_FACTORY_ABI
+        pool_abi = PANCAKE_V3_POOL_ABI
+    else:
+        factory_abi = UNISWAP_V3_FACTORY_ABI
+        pool_abi = UNISWAP_V3_POOL_ABI
+
+    factory = w3.eth.contract(address=factory_addr, abi=factory_abi)
+
+    for fee in V3_FEE_TIERS:
+        pool_addr = factory.functions.getPool(token_address, base_address, fee).call()
+        if not _has_code(pool_addr):
+            continue
+
+        # Verify pool has liquidity
+        pool_contract = w3.eth.contract(address=pool_addr, abi=pool_abi)
+        try:
+            liquidity = pool_contract.functions.liquidity().call()
+            if liquidity == 0:
+                logging.info(f"  - {dex_key}: pool {pool_addr} at {fee} bps has zero liquidity, skipping")
+                continue
+        except Exception:
+            continue
+
+        pools.append({
+            'dex': dex_key,
+            'pair': pair_label,
+            'pairAddress': pool_addr,
+            'feeBps': fee,
+            'liq_usd': 0,
+            'base_currency_price_usd': 0,
+        })
+        logging.info(f"  - {dex_key}: found V3 pool {pool_addr} at {fee} bps (liquidity: {liquidity})")
