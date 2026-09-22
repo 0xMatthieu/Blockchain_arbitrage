@@ -179,8 +179,19 @@ class ArbitrageBot:
 
 if __name__ == "__main__":
     setup_logging()
-    bot = ArbitrageBot(shared_spread_info_dict={})
-    try:
-        bot.run()
-    except KeyboardInterrupt:
-        logging.info("\nProgram stopped by user.")
+    from config import ARB_MODE
+    if ARB_MODE == "detect":
+        # Read-only: watch spreads block by block and attribute who takes them. No key needed.
+        from detect import SpreadDetector
+        logging.info("ARB_MODE=detect: detection and attribution only, no trades.")
+        detector = SpreadDetector()
+        try:
+            detector.run()
+        except KeyboardInterrupt:
+            logging.info("\nProgram stopped by user.")
+    else:
+        bot = ArbitrageBot(shared_spread_info_dict={})
+        try:
+            bot.run()
+        except KeyboardInterrupt:
+            logging.info("\nProgram stopped by user.")

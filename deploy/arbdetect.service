@@ -1,0 +1,19 @@
+[Unit]
+Description=Blockchain arbitrage bot (Base) - detect-and-attribute mode
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/home/matthieu/Blockchain_arbitrage/.env
+
+[Service]
+Type=simple
+User=matthieu
+WorkingDirectory=/home/matthieu/Blockchain_arbitrage
+ExecStart=/home/matthieu/Blockchain_arbitrage/.venv/bin/python main.py
+Environment=PYTHONUNBUFFERED=1
+Environment=ARB_MODE=detect
+Restart=always
+RestartSec=30
+MemoryMax=400M
+
+[Install]
+WantedBy=multi-user.target

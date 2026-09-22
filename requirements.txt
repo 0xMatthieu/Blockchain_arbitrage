@@ -1,5 +1,5 @@
 python-dotenv
-web3
+web3<8
 eth-abi
 py-solc-x
 pytest

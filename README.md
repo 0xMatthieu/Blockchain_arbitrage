@@ -122,6 +122,22 @@ streamlit run ui.py
 
 ---
 
+## Detect-and-attribute mode (default)
+
+`ARB_MODE=detect` (the default) never trades and needs no private key. It watches every new Base block, prices all discovered pools, and for each fee-adjusted spread above `DETECT_MIN_SPREAD_PERCENT`:
+
+1. logs `spread_open` with the block, the two pools and how late we saw the block (`seen_latency_s` = our clock minus block timestamp);
+2. logs `spread_close` when the spread drops below the threshold (or after `ATTRIBUTION_MAX_BLOCKS`);
+3. reads the logs of the two pools between those blocks, resolves the transactions, and logs `attribution`: the first tx that touched **both** pools after the opening block is the winner, with sender, contract, tx index and priority fee. A leaderboard of senders is kept in `logs/arb_status.json`.
+
+Read the leaderboard after a day. If the same few addresses win every spread with a priority fee you are not paying and a block latency you cannot match, that is your answer about atomic arb on Base. Events go to `logs/arb_events.jsonl`; the Dex perp bot dashboard renders them (set `ARB_LOGS_DIR` there). `logs/control.json` with `{"mode": "pause"}` pauses the detector; the dashboard writes it.
+
+```bash
+ARB_MODE=detect python main.py
+```
+
+---
+
 ## Withdrawing Profits
 
 To withdraw tokens from the contract back to your wallet:

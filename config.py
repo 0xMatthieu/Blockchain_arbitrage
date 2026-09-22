@@ -28,6 +28,12 @@ BALANCE_CHECK_DELAY = 1.0          # seconds between balance check retries
 TX_RECEIPT_TIMEOUT = 120           # seconds to wait for transaction receipt
 ON_CHAIN_POLL_INTERVAL = float(os.getenv("ON_CHAIN_POLL_INTERVAL", 0.5))  # seconds between on-chain price polls
 
+# --- Detect-and-attribute mode (see detect.py) ---
+ARB_MODE = os.getenv("ARB_MODE", "detect").strip().lower()            # "detect" (no trades) | "trade"
+DETECT_MIN_SPREAD_PERCENT = float(os.getenv("DETECT_MIN_SPREAD_PERCENT", 0.1))  # record spreads above this
+ATTRIBUTION_MAX_BLOCKS = int(os.getenv("ATTRIBUTION_MAX_BLOCKS", 10))   # give up attributing after this many blocks
+STATUS_INTERVAL_SECONDS = float(os.getenv("STATUS_INTERVAL_SECONDS", 15))
+
 # --- Blockchain Configuration ---
 BASE_CHAIN_ID = os.getenv("BASE_CHAIN_ID")
 BASE_RPC_URL = os.getenv("BASE_RPC_URL")
